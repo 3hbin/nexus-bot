@@ -525,7 +525,7 @@ client.on('messageCreate', async (message) => {
 });
 
 // ==========================================
-// KHỞI TẠO BOT
+// KHỞI TẠO BOT & CHỐNG SẬP APP
 // ==========================================
 (async () => {
   try {
@@ -539,6 +539,15 @@ client.on('messageCreate', async (message) => {
     process.exit(1);
   }
 })();
+
+// BẮT LỖI TOÀN CỤC CHỐNG SẬP BOT TRÊN RENDER
+process.on('uncaughtException', (err) => {
+  console.error('❌ Phát hiện lỗi Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Phát hiện Unhandled Rejection tại:', promise, 'Lý do:', reason);
+});
 
 process.on('beforeExit', () => {
   if (saveTimeout) {
