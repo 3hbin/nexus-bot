@@ -1,6 +1,7 @@
 {
   "name": "nexus-bot",
   "version": "1.0.0",
+  "description": "Nexus AI Discord Bot powered by Gemini API",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
