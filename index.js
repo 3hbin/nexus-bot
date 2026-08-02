@@ -52,7 +52,6 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ALLOWED_CHANNELS_FILE =
   process.env.ALLOWED_CHANNELS_FILE || path.join(__dirname, 'data', 'allowedChannels.json');
 
-// GIỚI HẠN THỜI GIAN GỬI TIN NHẮN (Rate Limit - Cooldown tính theo giây cho chat thường)
 const CHAT_COOLDOWN_SECONDS = 5;
 const userCooldowns = new Map();
 
@@ -79,7 +78,7 @@ app.listen(PORT, () => {
 // ==========================================
 // GOOGLE GEMINI CONFIG
 // ==========================================
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const aiInstance = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const SYSTEM_INSTRUCTION =
   'Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm. ' +
@@ -359,14 +358,14 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
 
-      const prompt = interaction.options.getString('prompt');
+      const promptStr = interaction.options.getString('prompt');
       await interaction.deferReply();
 
       try {
-        const { buffer, mimeType } = await generateImage(ai, prompt);
+        const { buffer, mimeType } = await generateImage(aiInstance, promptStr);
         const ext = mimeType.includes('png') ? 'png' : 'jpg';
         const attachment = new AttachmentBuilder(buffer, { name: `nexus_image.${ext}` });
-        return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${prompt}"`, files: [attachment] });
+        return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
         console.error('❌ Lỗi tạo ảnh:', err);
         return interaction.editReply(`❌ Không thể tạo ảnh: ${err.message || 'Lỗi không xác định.'}`);
@@ -383,17 +382,17 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
 
-      const prompt = interaction.options.getString('prompt');
+      const promptStr = interaction.options.getString('prompt');
       await interaction.deferReply();
       await interaction.editReply('🎬 Đang tiến hành dựng video bằng Veo 3.1... Quá trình này có thể mất từ 1 đến 6 phút, vui lòng chờ xíu nhé!');
 
       let videoPath;
       try {
-        videoPath = await generateVideo(ai, prompt, {
+        videoPath = await generateVideo(aiInstance, promptStr, {
           onProgress: (s) => console.log(`⏳ Đang tạo video cho ${user.tag}... [${s}s]`),
         });
         const attachment = new AttachmentBuilder(videoPath, { name: 'nexus_video.mp4' });
-        await interaction.editReply({ content: `🎬 Video tạo theo yêu cầu: "${prompt}"`, files: [attachment] });
+        await interaction.editReply({ content: `🎬 Video tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
         console.error('❌ Lỗi tạo video:', err);
         await interaction.editReply(`❌ Không thể tạo video: ${err.message || 'Lỗi không xác định.'}`);
@@ -419,14 +418,13 @@ client.on('messageCreate', async (message) => {
 
   const ticketData = getTicketByChannel(message.channel.id);
 
-  // 1. Nhận Gemini API Key riêng trong kênh Ticket
   if (ticketData && message.content.trim().toLowerCase().startsWith('key:')) {
     const apiKey = message.content.replace(/key:/i, '').trim();
     if (apiKey.length < 20) {
       return message.reply('❌ Key Gemini không hợp lệ. Vui lòng kiểm tra lại!');
     }
     setTicketApiKey(message.channel.id, apiKey);
-    await message.delete().catch(() => {}); // Thu hồi tin nhắn chứa Key để bảo mật
+    await message.delete().catch(() => {});
     return message.channel.send('🔑 **Đã lưu Key Gemini thành công!** (Tin nhắn chứa Key đã được tự động xóa).');
   }
 
@@ -438,7 +436,6 @@ client.on('messageCreate', async (message) => {
   if (!isDM && !ticketData && targetChannel && message.channel.id !== targetChannel) return;
   if (!isDM && !ticketData && !targetChannel && !isMentioned) return;
 
-  // 2. Kiếm tra Cooldown Rate Limit Chat
   const now = Date.now();
   const cooldownAmount = CHAT_COOLDOWN_SECONDS * 1000;
   if (userCooldowns.has(message.author.id)) {
@@ -461,10 +458,9 @@ client.on('messageCreate', async (message) => {
   try { await message.channel.sendTyping(); } catch (err) {}
 
   try {
-    let activeAi = ai;
+    let activeAi = aiInstance;
     let selectedModel = DEFAULT_MODEL;
 
-    // Thiết lập riêng nếu tin nhắn gửi từ Kênh Ticket
     if (ticketData) {
       if (!ticketData.userApiKey) {
         return message.reply(
