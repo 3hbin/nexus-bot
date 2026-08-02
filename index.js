@@ -50,8 +50,24 @@ app.listen(PORT, () => {
 // ==========================================
 // GOOGLE GEMINI: khởi tạo client + model
 // ==========================================
+// QUAN TRỌNG: "systemInstruction" phải được truyền TRỰC TIẾP vào getGenerativeModel().
+// Đây là chuẩn chính thức của @google/generative-ai (không nhét vào history dạng role:"user"/"model" nữa,
+// vì Gemini 1.5 KHÔNG chấp nhận role "system" trong mảng history -> gây lỗi INVALID_ARGUMENT).
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+const SYSTEM_INSTRUCTION =
+  'Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm. ' +
+  'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. ' +
+  'Trả lời ngắn gọn, rõ ràng.';
+
+// LƯU Ý QUAN TRỌNG: 'gemini-1.5-flash' và 'gemini-2.0-flash' ĐÃ BỊ GOOGLE NGỪNG HOẠT ĐỘNG
+// (shutdown) tính đến thời điểm hiện tại -> mọi request đều trả về lỗi 404 Not Found.
+// Model ổn định (GA) hiện dùng được là 'gemini-2.5-flash'.
+// Nếu muốn dùng bản mới nhất chưa có lịch ngừng hoạt động, đổi thành 'gemini-3.5-flash'.
+const model = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  systemInstruction: SYSTEM_INSTRUCTION,
+});
 
 // ==========================================
 // DISCORD CLIENT
@@ -95,12 +111,14 @@ const GIFS = {
   ],
 };
 
+// Chọn ngẫu nhiên 1 GIF ứng với cảm xúc
 function pickGifForEmotion(emotion) {
   const list = GIFS[emotion];
   if (!list || list.length === 0) return null;
   return list[Math.floor(Math.random() * list.length)];
 }
 
+// Phân tích cảm xúc đơn giản dựa trên nội dung text (regex keyword)
 function detectEmotion(text) {
   if (!text) return null;
   const t = text.toLowerCase();
@@ -120,7 +138,9 @@ async function ensureDataDir() {
   const dir = path.dirname(ALLOWED_CHANNELS_FILE);
   try {
     await fs.mkdir(dir, { recursive: true });
-  } catch (err) {}
+  } catch (err) {
+    console.error('❌ Lỗi khi tạo thư mục data:', err);
+  }
 }
 
 async function saveAllowedChannelsToFile() {
@@ -134,11 +154,12 @@ async function saveAllowedChannelsToFile() {
   }
 }
 
+// Debounce việc ghi file để tránh ghi liên tục khi có nhiều thay đổi gần nhau
 let saveTimeout = null;
 function scheduleSaveAllowedChannels(delay = 200) {
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => {
-    saveAllowedChannelsToFile().catch(err => console.error(err));
+    saveAllowedChannelsToFile().catch(err => console.error('❌ Lỗi scheduleSave:', err));
     saveTimeout = null;
   }, delay);
 }
@@ -153,7 +174,7 @@ async function loadAllowedChannelsFromFile() {
     console.log(`📂 Loaded allowedChannels from ${ALLOWED_CHANNELS_FILE}`);
   } catch (err) {
     if (err.code === 'ENOENT') {
-      console.log('📂 No allowedChannels file found, starting fresh.');
+      console.log('📂 Không tìm thấy file allowedChannels, bắt đầu với cấu hình trống.');
     } else {
       console.error('❌ Error loading allowedChannels:', err);
     }
@@ -236,7 +257,7 @@ client.on('interactionCreate', async (interaction) => {
       const activeSessions = userSessions.size;
       if (!guildId) {
         return interaction.reply({
-          content: `📡 Nexus AI Status (DM):\n- Active sessions: **${activeSessions}**\n- Model: **gemini-1.5-flash**`,
+          content: `📡 Nexus AI Status (DM):\n- Active sessions: **${activeSessions}**\n- Model: **gemini-2.5-flash**`,
           ephemeral: true,
         });
       } else {
@@ -244,7 +265,7 @@ client.on('interactionCreate', async (interaction) => {
         const channelInfo = tgt ? `<#${tgt}> (\`${tgt}\`)` : 'Chưa thiết lập (bot phản hồi khi được mention hoặc trong DM)';
         return interaction.reply({
           content:
-            `📡 Nexus AI Status (Server):\n- Kênh hiện tại: ${channelInfo}\n- Active sessions tổng: **${activeSessions}**\n- Model: **gemini-1.5-flash**`,
+            `📡 Nexus AI Status (Server):\n- Kênh hiện tại: ${channelInfo}\n- Active sessions tổng: **${activeSessions}**\n- Model: **gemini-2.5-flash**`,
           ephemeral: true,
         });
       }
@@ -252,9 +273,9 @@ client.on('interactionCreate', async (interaction) => {
   } catch (err) {
     console.error('❌ Lỗi khi xử lý interaction:', err);
     if (interaction.replied || interaction.deferred) {
-      try { await interaction.editReply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch {}
+      try { await interaction.editReply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch (e) { console.error('❌ Lỗi editReply:', e); }
     } else {
-      try { await interaction.reply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch {}
+      try { await interaction.reply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch (e) { console.error('❌ Lỗi reply:', e); }
     }
   }
 });
@@ -271,7 +292,9 @@ client.on('messageCreate', async (message) => {
   const targetChannel = guildId ? allowedChannels.get(guildId) : null;
   const isMentioned = message.mentions.has(client.user);
 
+  // Nếu server đã setchannel -> chỉ phản hồi trong kênh đó
   if (!isDM && targetChannel && message.channel.id !== targetChannel) return;
+  // Nếu chưa setchannel -> chỉ phản hồi khi được mention (hoặc trong DM)
   if (!isDM && !targetChannel && !isMentioned) return;
 
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
@@ -292,24 +315,16 @@ client.on('messageCreate', async (message) => {
   }
 
   try {
+    // Tạo session chat mới cho user nếu chưa có.
+    // LƯU Ý: KHÔNG truyền role "user"/"model" giả lập system prompt vào history nữa.
+    // systemInstruction đã được cấu hình sẵn ở cấp model (getGenerativeModel),
+    // nên history ở đây bắt đầu HOÀN TOÀN TRỐNG -> tránh lỗi INVALID_ARGUMENT từ Gemini API.
     if (!userSessions.has(userId)) {
       const chatSession = model.startChat({
-        history: [
-          {
-            role: 'user',
-            parts: [{
-              text:
-                "Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm và lịch sự. " +
-                "Khi trả lời, HÃY tự động lồng ghép một vài Emoji phù hợp với ngữ cảnh (ví dụ: 😀, 😂, 🤔, 🙏, 😅, 🎉) để làm câu trả lời thân thiện và sinh động. " +
-                "Đừng lạm dụng emoji quá nhiều — sử dụng hợp lý theo ngữ cảnh. " +
-                "Trả lời ngắn gọn, rõ ràng và có thể kèm 1 câu chào/cuối."
-            }],
-          },
-          {
-            role: 'model',
-            parts: [{ text: 'Chào bạn! Mình là Nexus AI. Rất vui được hỗ trợ bạn! 😊' }],
-          },
-        ],
+        history: [],
+        generationConfig: {
+          maxOutputTokens: 1024,
+        },
       });
       userSessions.set(userId, chatSession);
     }
@@ -320,7 +335,7 @@ client.on('messageCreate', async (message) => {
     try {
       result = await chat.sendMessage(prompt);
     } catch (apiErr) {
-      console.error('Lỗi khi gọi Gemini API (sendMessage):', apiErr);
+      console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
       try {
         await message.reply('❌ Rất tiếc, không thể liên lạc với Gemini API ngay lúc này. Hãy thử lại sau hoặc dùng `/reset`.');
       } catch (replyErr) {
@@ -331,10 +346,8 @@ client.on('messageCreate', async (message) => {
 
     let replyText = '';
     try {
-      if (result && typeof result.response?.text === 'function') {
+      if (result && result.response && typeof result.response.text === 'function') {
         replyText = result.response.text();
-      } else if (typeof result === 'string') {
-        replyText = result;
       } else {
         replyText = '🤖 Nexus AI đã trả về nội dung không xác định.';
       }
@@ -408,15 +421,15 @@ process.on('beforeExit', () => {
     clearTimeout(saveTimeout);
     saveTimeout = null;
   }
-  saveAllowedChannelsToFile().catch(err => console.error(err));
+  saveAllowedChannelsToFile().catch(err => console.error('❌ Lỗi khi lưu trước khi thoát:', err));
 });
 
 process.on('SIGINT', async () => {
-  try { await saveAllowedChannelsToFile(); } catch (err) {}
+  try { await saveAllowedChannelsToFile(); } catch (err) { console.error('❌ Lỗi SIGINT save:', err); }
   process.exit();
 });
 
 process.on('SIGTERM', async () => {
-  try { await saveAllowedChannelsToFile(); } catch (err) {}
+  try { await saveAllowedChannelsToFile(); } catch (err) { console.error('❌ Lỗi SIGTERM save:', err); }
   process.exit();
 });
