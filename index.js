@@ -1,67 +1,189 @@
+// index.js
+// Nexus AI Discord Bot (Node.js, discord.js v14) tích hợp Google Gemini + Express (keep-alive)
 require('dotenv').config();
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+
 const express = require('express');
+const path = require('path');
+const fs = require('fs').promises;
+
+const {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+} = require('discord.js');
+
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // ==========================================
-// 1. WEB SERVER DÙNG ĐỂ KEEP-ALIVE RENDER
+// CONFIG & INIT
+// ==========================================
+const PORT = process.env.PORT || 3000;
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+const ALLOWED_CHANNELS_FILE = process.env.ALLOWED_CHANNELS_FILE ||
+  path.join(__dirname, 'data', 'allowedChannels.json');
+
+if (!DISCORD_TOKEN) {
+  console.error('❌ Missing DISCORD_TOKEN in environment variables.');
+  process.exit(1);
+}
+if (!GEMINI_API_KEY) {
+  console.error('❌ Missing GEMINI_API_KEY in environment variables.');
+  process.exit(1);
+}
+
+// ==========================================
+// EXPRESS KEEP-ALIVE SERVER (Render)
 // ==========================================
 const app = express();
-const PORT = process.env.PORT || 3000;
-
 app.get('/', (req, res) => {
   res.send('🤖 Nexus AI Bot is running 24/7!');
 });
-
 app.listen(PORT, () => {
   console.log(`🌐 Web server đang chạy tại port ${PORT}`);
 });
 
 // ==========================================
-// 2. KHỞI TẠO BOT & GEMINI AI
+// GOOGLE GEMINI: khởi tạo client + model
 // ==========================================
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
+// ==========================================
+// DISCORD CLIENT
+// ==========================================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
   ],
+  partials: ['CHANNEL'],
 });
 
-// Bộ nhớ đệm
+// ==========================================
+// BỘ NHỚ & CẤU HÌNH GIF
+// ==========================================
 const userSessions = new Map();
 const allowedChannels = new Map();
 
+const GIFS = {
+  hello: [
+    'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
+    'https://media.giphy.com/media/ASd0Ukj0y3qMM/giphy.gif',
+  ],
+  happy: [
+    'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif',
+    'https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif',
+  ],
+  sorry: [
+    'https://media.giphy.com/media/9Y5BbDSkSTiY8/giphy.gif',
+    'https://media.giphy.com/media/xUPGcguWZHRC2HyBRS/giphy.gif',
+  ],
+  thanks: [
+    'https://media.giphy.com/media/l4FGwHEUCGILg3g0A/giphy.gif',
+    'https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif',
+  ],
+  thinking: [
+    'https://media.giphy.com/media/l0HlQ7LRal2p7x1Wc/giphy.gif',
+    'https://media.giphy.com/media/3o6ZtaO9BZHcOjmErm/giphy.gif',
+  ],
+};
+
+function pickGifForEmotion(emotion) {
+  const list = GIFS[emotion];
+  if (!list || list.length === 0) return null;
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function detectEmotion(text) {
+  if (!text) return null;
+  const t = text.toLowerCase();
+
+  if (/\b(hello|hi|hey|chào|xin chào|chào bạn|chào mọi người)\b/.test(t)) return 'hello';
+  if (/\b(thanks|thank you|cảm ơn|cảm ơn bạn|thank)\b/.test(t)) return 'thanks';
+  if (/\b(sorry|xin lỗi|rất tiếc|xin lỗi bạn)\b/.test(t)) return 'sorry';
+  if (/\b(maybe|hmm|hmm...|đang suy nghĩ|suy nghĩ|có thể|let me think|i think)\b/.test(t)) return 'thinking';
+  if (/\b(haha|lol|😂|vui|tuyệt|tuyệt vời|tôi rất vui|thích|yay|hooray|excited|great)\b/.test(t)) return 'happy';
+  return null;
+}
+
 // ==========================================
-// 3. ĐĂNG KÝ SLASH COMMANDS VỚI DISCORD
+// Persistence: load & save allowedChannels
+// ==========================================
+async function ensureDataDir() {
+  const dir = path.dirname(ALLOWED_CHANNELS_FILE);
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch (err) {}
+}
+
+async function saveAllowedChannelsToFile() {
+  try {
+    await ensureDataDir();
+    const obj = Object.fromEntries(allowedChannels);
+    await fs.writeFile(ALLOWED_CHANNELS_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    console.log(`💾 Saved allowedChannels to ${ALLOWED_CHANNELS_FILE}`);
+  } catch (err) {
+    console.error('❌ Error saving allowedChannels:', err);
+  }
+}
+
+let saveTimeout = null;
+function scheduleSaveAllowedChannels(delay = 200) {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    saveAllowedChannelsToFile().catch(err => console.error(err));
+    saveTimeout = null;
+  }, delay);
+}
+
+async function loadAllowedChannelsFromFile() {
+  try {
+    const content = await fs.readFile(ALLOWED_CHANNELS_FILE, 'utf8');
+    const obj = JSON.parse(content);
+    for (const [guildId, channelId] of Object.entries(obj || {})) {
+      allowedChannels.set(guildId, channelId);
+    }
+    console.log(`📂 Loaded allowedChannels from ${ALLOWED_CHANNELS_FILE}`);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.log('📂 No allowedChannels file found, starting fresh.');
+    } else {
+      console.error('❌ Error loading allowedChannels:', err);
+    }
+  }
+}
+
+// ==========================================
+// SLASH COMMANDS
 // ==========================================
 const commands = [
-  new SlashCommandBuilder()
-    .setName('ping')
-    .setDescription('Kiểm tra độ trễ kết nối của Bot'),
-  new SlashCommandBuilder()
-    .setName('reset')
-    .setDescription('Xóa lịch sử trò chuyện cá nhân với Nexus AI'),
+  new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ kết nối của Bot'),
+  new SlashCommandBuilder().setName('reset').setDescription('Xóa lịch sử trò chuyện cá nhân với Nexus AI'),
   new SlashCommandBuilder()
     .setName('setchannel')
-    .setDescription('Cài đặt kênh duy nhất cho phép Nexus AI hoạt động (Chỉ Admin)')
+    .setDescription('Thiết lập kênh hiện tại làm kênh duy nhất bot phản hồi (Chỉ Admin)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-];
+  new SlashCommandBuilder()
+    .setName('unsetchannel')
+    .setDescription('Bỏ thiết lập kênh duy nhất (Chỉ Admin)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('status').setDescription('Hiển thị trạng thái hiện tại của Nexus AI trong server này'),
+].map(cmd => cmd.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 
 client.once('ready', async () => {
   console.log(`✅ Bot ${client.user.tag} đã online!`);
-  
   try {
     console.log('🔄 Đang đăng ký Slash Commands lên Discord...');
-    await rest.put(
-      Routes.applicationCommands(client.user.id),
-      { body: commands }
-    );
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
     console.log('🎉 Đã đăng ký Slash Commands thành công!');
   } catch (error) {
     console.error('❌ Lỗi khi đăng ký Slash Commands:', error);
@@ -69,66 +191,123 @@ client.once('ready', async () => {
 });
 
 // ==========================================
-// 4. XỬ LÝ SLASH COMMANDS (Menu gõ /)
+// XỬ LÝ SLASH COMMANDS
 // ==========================================
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  try {
+    if (!interaction.isChatInputCommand()) return;
 
-  const { commandName, user, guildId, channelId } = interaction;
+    const { commandName, user, guildId, channelId } = interaction;
 
-  // Lệnh /ping
-  if (commandName === 'ping') {
-    const sent = await interaction.reply({ content: '🏓 Ping...', fetchReply: true });
-    const latency = sent.createdTimestamp - interaction.createdTimestamp;
-    return interaction.editReply(`🏓 **Pong!**\n⚡ Độ trễ Bot: \`${latency}ms\`\n🌐 WebSocket: \`${client.ws.ping}ms\``);
-  }
+    if (commandName === 'ping') {
+      const sent = await interaction.reply({ content: '🏓 Ping...', fetchReply: true });
+      const latency = sent.createdTimestamp - interaction.createdTimestamp;
+      return interaction.editReply(`🏓 **Pong!**\n⚡ Độ trễ Bot: \`${latency}ms\`\n🌐 WebSocket: \`${client.ws.ping}ms\``);
+    }
 
-  // Lệnh /reset
-  if (commandName === 'reset') {
-    userSessions.delete(user.id);
-    return interaction.reply('🔄 Đã xóa bộ nhớ lịch sử trò chuyện của bạn! Chúng ta có thể bắt đầu chủ đề mới.');
-  }
+    if (commandName === 'reset') {
+      userSessions.delete(user.id);
+      return interaction.reply('🔄 Đã xóa bộ nhớ lịch sử trò chuyện của bạn! Chúng ta có thể bắt đầu chủ đề mới.');
+    }
 
-  // Lệnh /setchannel
-  if (commandName === 'setchannel') {
-    allowedChannels.set(guildId, channelId);
-    return interaction.reply(`✅ Đã thiết lập <#${channelId}> làm kênh trò chuyện duy nhất cho Nexus AI!`);
+    if (commandName === 'setchannel') {
+      if (!guildId) {
+        return interaction.reply({ content: '❌ Lệnh này chỉ có thể dùng trong server.', ephemeral: true });
+      }
+      allowedChannels.set(guildId, channelId);
+      scheduleSaveAllowedChannels();
+      return interaction.reply(`✅ Đã thiết lập <#${channelId}> làm kênh trò chuyện duy nhất cho Nexus AI!`);
+    }
+
+    if (commandName === 'unsetchannel') {
+      if (!guildId) {
+        return interaction.reply({ content: '❌ Lệnh này chỉ có thể dùng trong server.', ephemeral: true });
+      }
+      if (allowedChannels.has(guildId)) {
+        allowedChannels.delete(guildId);
+        scheduleSaveAllowedChannels();
+        return interaction.reply(`✅ Đã bỏ thiết lập kênh duy nhất cho server này. Nexus AI sẽ phản hồi khi được mention hoặc trong DM.`);
+      } else {
+        return interaction.reply({ content: 'ℹ️ Server này chưa thiết lập kênh duy nhất.', ephemeral: true });
+      }
+    }
+
+    if (commandName === 'status') {
+      const activeSessions = userSessions.size;
+      if (!guildId) {
+        return interaction.reply({
+          content: `📡 Nexus AI Status (DM):\n- Active sessions: **${activeSessions}**\n- Model: **gemini-1.5-flash**`,
+          ephemeral: true,
+        });
+      } else {
+        const tgt = allowedChannels.get(guildId);
+        const channelInfo = tgt ? `<#${tgt}> (\`${tgt}\`)` : 'Chưa thiết lập (bot phản hồi khi được mention hoặc trong DM)';
+        return interaction.reply({
+          content:
+            `📡 Nexus AI Status (Server):\n- Kênh hiện tại: ${channelInfo}\n- Active sessions tổng: **${activeSessions}**\n- Model: **gemini-1.5-flash**`,
+          ephemeral: true,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('❌ Lỗi khi xử lý interaction:', err);
+    if (interaction.replied || interaction.deferred) {
+      try { await interaction.editReply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch {}
+    } else {
+      try { await interaction.reply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch {}
+    }
   }
 });
 
 // ==========================================
-// 5. XỬ LÝ TRÒ CHUYỆN AI TỰ ĐỘNG
+// XỬ LÝ TIN NHẮN (AUTO-CHAT)
 // ==========================================
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  const content = message.content.trim();
+  const isDM = !message.guild;
   const guildId = message.guildId;
   const userId = message.author.id;
-
-  const targetChannel = allowedChannels.get(guildId);
+  const targetChannel = guildId ? allowedChannels.get(guildId) : null;
   const isMentioned = message.mentions.has(client.user);
 
-  // Lọc kênh và tag
-  if (targetChannel && message.channel.id !== targetChannel) return;
-  if (!targetChannel && !isMentioned) return;
+  if (!isDM && targetChannel && message.channel.id !== targetChannel) return;
+  if (!isDM && !targetChannel && !isMentioned) return;
 
-  const prompt = content.replace(/<@!?\d+>/g, '').trim();
-  if (!prompt) return message.reply('Bạn cần Nexus AI hỗ trợ gì nào?');
+  const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
 
-  await message.channel.sendTyping();
+  if (!prompt) {
+    try {
+      await message.reply('Bạn cần Nexus AI hỗ trợ gì nào?');
+    } catch (err) {
+      console.error('❌ Lỗi khi gửi phản hồi cho tin nhắn rỗng:', err);
+    }
+    return;
+  }
+
+  try {
+    await message.channel.sendTyping();
+  } catch (err) {
+    console.warn('⚠️ Lỗi khi gửi typing indicator:', err);
+  }
 
   try {
     if (!userSessions.has(userId)) {
       const chatSession = model.startChat({
         history: [
           {
-            role: "user",
-            parts: [{ text: "Hãy đóng vai Nexus AI, một trợ lý Discord thông minh, vui tính và thân thiện." }],
+            role: 'user',
+            parts: [{
+              text:
+                "Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm và lịch sự. " +
+                "Khi trả lời, HÃY tự động lồng ghép một vài Emoji phù hợp với ngữ cảnh (ví dụ: 😀, 😂, 🤔, 🙏, 😅, 🎉) để làm câu trả lời thân thiện và sinh động. " +
+                "Đừng lạm dụng emoji quá nhiều — sử dụng hợp lý theo ngữ cảnh. " +
+                "Trả lời ngắn gọn, rõ ràng và có thể kèm 1 câu chào/cuối."
+            }],
           },
           {
-            role: "model",
-            parts: [{ text: "Chào bạn! Mình là Nexus AI. Rất vui được hỗ trợ bạn!" }],
+            role: 'model',
+            parts: [{ text: 'Chào bạn! Mình là Nexus AI. Rất vui được hỗ trợ bạn! 😊' }],
           },
         ],
       });
@@ -136,24 +315,108 @@ client.on('messageCreate', async (message) => {
     }
 
     const chat = userSessions.get(userId);
-    const result = await chat.sendMessage(prompt);
-    const replyText = result.response.text();
 
-    if (replyText.length > 2000) {
-      const chunks = replyText.match(/[\s\S]{1,1900}/g);
-      for (const chunk of chunks) {
-        await message.reply(chunk);
+    let result;
+    try {
+      result = await chat.sendMessage(prompt);
+    } catch (apiErr) {
+      console.error('Lỗi khi gọi Gemini API (sendMessage):', apiErr);
+      try {
+        await message.reply('❌ Rất tiếc, không thể liên lạc với Gemini API ngay lúc này. Hãy thử lại sau hoặc dùng `/reset`.');
+      } catch (replyErr) {
+        console.error('❌ Lỗi khi gửi phản hồi lỗi tới user:', replyErr);
+      }
+      return;
+    }
+
+    let replyText = '';
+    try {
+      if (result && typeof result.response?.text === 'function') {
+        replyText = result.response.text();
+      } else if (typeof result === 'string') {
+        replyText = result;
+      } else {
+        replyText = '🤖 Nexus AI đã trả về nội dung không xác định.';
+      }
+    } catch (err) {
+      console.error('❌ Lỗi khi lấy text từ kết quả Gemini:', err);
+      replyText = '❌ Rất tiếc, có lỗi khi xử lý phản hồi từ Gemini.';
+    }
+
+    if (!replyText) replyText = '🤖 Nexus AI không trả lời được nội dung này.';
+
+    const emotion = detectEmotion(replyText);
+    const gifUrl = emotion ? pickGifForEmotion(emotion) : null;
+
+    const DISCORD_MAX = 2000;
+    if (replyText.length > DISCORD_MAX) {
+      const safeChunkSize = 1900;
+      const chunks = replyText.match(new RegExp(`([\\s\\S]{1,${safeChunkSize}})`, 'g')) || [];
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        if (i === chunks.length - 1 && gifUrl) {
+          try {
+            await message.reply(`${chunk}\n\n${gifUrl}`);
+          } catch (sendErr) {
+            console.error('❌ Lỗi khi gửi chunk cuối với GIF:', sendErr);
+          }
+        } else {
+          try {
+            await message.reply(chunk);
+          } catch (sendErr) {
+            console.error('❌ Lỗi khi gửi chunk tới Discord:', sendErr);
+          }
+        }
       }
     } else {
-      await message.reply(replyText);
+      try {
+        if (gifUrl) {
+          await message.reply(`${replyText}\n\n${gifUrl}`);
+        } else {
+          await message.reply(replyText);
+        }
+      } catch (sendErr) {
+        console.error('❌ Lỗi khi gửi phản hồi tới Discord:', sendErr);
+      }
     }
   } catch (error) {
-    console.error('Lỗi Gemini API:', error);
-    message.reply('❌ Rất tiếc, có lỗi xảy ra. Hãy thử dùng lệnh `/reset` trên menu xem sao nhé.');
+    console.error('❌ Lỗi khi xử lý messageCreate:', error);
+    try {
+      await message.reply('❌ Đã có lỗi xảy ra khi xử lý yêu cầu của bạn. Hãy thử lại hoặc dùng `/reset`.');
+    } catch (replyErr) {
+      console.error('❌ Lỗi khi gửi thông báo lỗi tới user:', replyErr);
+    }
   }
 });
 
 // ==========================================
-// 6. ĐĂNG NHẬP BOT
+// KHỞI TẠO
 // ==========================================
-client.login(process.env.DISCORD_TOKEN);
+(async () => {
+  try {
+    await loadAllowedChannelsFromFile();
+    await client.login(DISCORD_TOKEN);
+    console.log('🔐 Đã gọi client.login()');
+  } catch (err) {
+    console.error('❌ Lỗi khi khởi động bot:', err);
+    process.exit(1);
+  }
+})();
+
+process.on('beforeExit', () => {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
+  saveAllowedChannelsToFile().catch(err => console.error(err));
+});
+
+process.on('SIGINT', async () => {
+  try { await saveAllowedChannelsToFile(); } catch (err) {}
+  process.exit();
+});
+
+process.on('SIGTERM', async () => {
+  try { await saveAllowedChannelsToFile(); } catch (err) {}
+  process.exit();
+});
