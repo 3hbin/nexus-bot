@@ -14,6 +14,7 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   ChannelType,
+  AttachmentBuilder,
 } = require('discord.js');
 
 const { GoogleGenAI } = require('@google/genai');
@@ -34,6 +35,12 @@ const {
   getTicketByChannel,
   setTicketApiKey,
 } = require('./TicketManager.js');
+const {
+  generateImage,
+  generateVideo,
+  cleanupTempFile,
+  checkMediaCooldown,
+} = require('./MediaGen.js');
 
 // ==========================================
 // CONFIG & INIT
@@ -45,7 +52,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ALLOWED_CHANNELS_FILE =
   process.env.ALLOWED_CHANNELS_FILE || path.join(__dirname, 'data', 'allowedChannels.json');
 
-// GIỚI HẠN THỜI GIAN GỬI TIN NHẮN (Rate Limit - Cooldown tính theo giây)
+// GIỚI HẠN THỜI GIAN GỬI TIN NHẮN (Rate Limit - Cooldown tính theo giây cho chat thường)
 const CHAT_COOLDOWN_SECONDS = 5;
 const userCooldowns = new Map();
 
@@ -72,7 +79,7 @@ app.listen(PORT, () => {
 // ==========================================
 // GOOGLE GEMINI CONFIG
 // ==========================================
-const defaultAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const SYSTEM_INSTRUCTION =
   'Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm. ' +
@@ -207,6 +214,18 @@ const commands = [
         .setRequired(false)
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
+    .setName('imagine')
+    .setDescription('Tạo ảnh bằng AI (Nano Banana)')
+    .addStringOption((opt) =>
+      opt.setName('prompt').setDescription('Mô tả ảnh bạn muốn tạo').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('video')
+    .setDescription('Tạo video ngắn bằng AI (Veo 3.1, có thể mất tới vài phút)')
+    .addStringOption((opt) =>
+      opt.setName('prompt').setDescription('Mô tả video bạn muốn tạo').setRequired(true)
+    ),
 ].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
@@ -329,6 +348,59 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'setup_ticketai') {
       return handleSetupTicketCommand(interaction);
     }
+
+    // 🎨 LỆNH TẠO ẢNH (/imagine)
+    if (commandName === 'imagine') {
+      const cooldown = checkMediaCooldown(user.id, 'image');
+      if (!cooldown.allowed) {
+        return interaction.reply({
+          content: `⏳ Từ từ đã nào! Hãy đợi thêm **${Math.ceil(cooldown.remainingMs / 1000)}s** nữa để tiếp tục tạo ảnh nha.`,
+          ephemeral: true,
+        });
+      }
+
+      const prompt = interaction.options.getString('prompt');
+      await interaction.deferReply();
+
+      try {
+        const { buffer, mimeType } = await generateImage(ai, prompt);
+        const ext = mimeType.includes('png') ? 'png' : 'jpg';
+        const attachment = new AttachmentBuilder(buffer, { name: `nexus_image.${ext}` });
+        return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${prompt}"`, files: [attachment] });
+      } catch (err) {
+        console.error('❌ Lỗi tạo ảnh:', err);
+        return interaction.editReply(`❌ Không thể tạo ảnh: ${err.message || 'Lỗi không xác định.'}`);
+      }
+    }
+
+    // 🎬 LỆNH TẠO VIDEO (/video)
+    if (commandName === 'video') {
+      const cooldown = checkMediaCooldown(user.id, 'video');
+      if (!cooldown.allowed) {
+        return interaction.reply({
+          content: `⏳ Lệnh tạo video tốn nhiều tài nguyên! Vui lòng chờ **${Math.ceil(cooldown.remainingMs / 1000)}s** nữa nha.`,
+          ephemeral: true,
+        });
+      }
+
+      const prompt = interaction.options.getString('prompt');
+      await interaction.deferReply();
+      await interaction.editReply('🎬 Đang tiến hành dựng video bằng Veo 3.1... Quá trình này có thể mất từ 1 đến 6 phút, vui lòng chờ xíu nhé!');
+
+      let videoPath;
+      try {
+        videoPath = await generateVideo(ai, prompt, {
+          onProgress: (s) => console.log(`⏳ Đang tạo video cho ${user.tag}... [${s}s]`),
+        });
+        const attachment = new AttachmentBuilder(videoPath, { name: 'nexus_video.mp4' });
+        await interaction.editReply({ content: `🎬 Video tạo theo yêu cầu: "${prompt}"`, files: [attachment] });
+      } catch (err) {
+        console.error('❌ Lỗi tạo video:', err);
+        await interaction.editReply(`❌ Không thể tạo video: ${err.message || 'Lỗi không xác định.'}`);
+      } finally {
+        if (videoPath) cleanupTempFile(videoPath);
+      }
+    }
   } catch (err) {
     console.error('❌ Lỗi khi xử lý interaction:', err);
     if (interaction.replied || interaction.deferred) {
@@ -354,8 +426,8 @@ client.on('messageCreate', async (message) => {
       return message.reply('❌ Key Gemini không hợp lệ. Vui lòng kiểm tra lại!');
     }
     setTicketApiKey(message.channel.id, apiKey);
-    await message.delete().catch(() => {}); // Thu hồi tin nhắn để bảo mật Key
-    return message.channel.send('🔑 **Đã lưu Key Gemini thành công!** (Tin nhắn chứa Key đã được bảo mật xóa đi).');
+    await message.delete().catch(() => {}); // Thu hồi tin nhắn chứa Key để bảo mật
+    return message.channel.send('🔑 **Đã lưu Key Gemini thành công!** (Tin nhắn chứa Key đã được tự động xóa).');
   }
 
   const isDM = !message.guild;
@@ -366,7 +438,7 @@ client.on('messageCreate', async (message) => {
   if (!isDM && !ticketData && targetChannel && message.channel.id !== targetChannel) return;
   if (!isDM && !ticketData && !targetChannel && !isMentioned) return;
 
-  // 2. Kiếm tra Cooldown Rate Limit Chat (Chống spam)
+  // 2. Kiếm tra Cooldown Rate Limit Chat
   const now = Date.now();
   const cooldownAmount = CHAT_COOLDOWN_SECONDS * 1000;
   if (userCooldowns.has(message.author.id)) {
@@ -389,7 +461,7 @@ client.on('messageCreate', async (message) => {
   try { await message.channel.sendTyping(); } catch (err) {}
 
   try {
-    let activeAi = defaultAi;
+    let activeAi = ai;
     let selectedModel = DEFAULT_MODEL;
 
     // Thiết lập riêng nếu tin nhắn gửi từ Kênh Ticket
