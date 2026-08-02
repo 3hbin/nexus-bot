@@ -8,7 +8,8 @@ const {
   ButtonStyle,
   EmbedBuilder,
   ChannelType,
-  PermissionFlagsBits,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
 } = require('discord.js');
 
 const TICKETS_FILE = path.join(__dirname, 'data', 'tickets.json');
@@ -139,17 +140,27 @@ async function handleTicketInteraction(interaction) {
       // ensure unique name by adding suffix if exists
       let finalName = baseName;
       let count = 1;
-      while (await guild.channels.cache.find((c) => c.name === finalName)) {
+      while (guild.channels.cache.find((c) => c.name === finalName)) {
         finalName = `${baseName}-${count++}`;
       }
-      // create channel under same category as button message if possible
-      let parent = null;
-      try { parent = interaction.channel?.parent || null; } catch (e) { parent = null; }
+
+      // Determine the parent category for the new ticket channel
+      // Priority: category named 'CHAT ROOM AI' (case-insensitive), then the parent of the interaction channel, else undefined
+      let parentId = undefined;
+      try {
+        const category = guild.channels.cache.find(
+          (c) => c.type === ChannelType.GuildCategory && c.name && c.name.toLowerCase() === 'chat room ai'
+        );
+        if (category) parentId = category.id;
+        else if (interaction.channel && interaction.channel.parent && interaction.channel.parent.id) parentId = interaction.channel.parent.id;
+      } catch (e) {
+        parentId = undefined;
+      }
 
       const created = await guild.channels.create({
         name: finalName,
         type: ChannelType.GuildText,
-        parent: parent ? parent.id : undefined,
+        parent: parentId,
         permissionOverwrites: [
           {
             id: guild.roles.everyone,
@@ -171,10 +182,41 @@ async function handleTicketInteraction(interaction) {
       }
 
       // save ticket info
-      tickets.set(String(created.id), { channelId: String(created.id), userApiKey: null, selectedModel: null });
+      tickets.set(String(created.id), { channelId: String(created.id), userApiKey: null, selectedModel: 'gemini-3.6-flash' });
       await saveTickets();
 
-      await created.send(`👋 Xin chào ${member.user}. Đây là kênh Ticket của bạn. Nếu kênh yêu cầu API Key để chat với Gemini riêng, hãy nhắn \`key: <GEMINI_API_KEY_CỦA_BẠN>\` tại đây.`).catch(() => {});
+      // Build components: Select menu for model selection + Close Ticket button
+      const select = new StringSelectMenuBuilder()
+        .setCustomId('select_model')
+        .setPlaceholder('Chọn model AI...')
+        .addOptions(
+          new StringSelectMenuOptionBuilder()
+            .setLabel('gemini-3.6-flash (Tốc độ & Mới nhất - Mặc định)')
+            .setDescription('Tốc độ & Mới nhất - Mặc định')
+            .setValue('gemini-3.6-flash'),
+          new StringSelectMenuOptionBuilder()
+            .setLabel('gemini-3.5-flash (Hiệu suất cao)')
+            .setDescription('Hiệu suất cao')
+            .setValue('gemini-3.5-flash'),
+          new StringSelectMenuOptionBuilder()
+            .setLabel('gemini-3.1-pro (Tư duy & Lập trình)')
+            .setDescription('Tư duy & Lập trình')
+            .setValue('gemini-3.1-pro')
+        )
+        .setMinValues(1)
+        .setMaxValues(1)
+        .setDefaultValue(['gemini-3.6-flash']);
+
+      const row1 = new ActionRowBuilder().addComponents(select);
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('close_ticket').setLabel('Đóng Ticket').setStyle(ButtonStyle.Secondary)
+      );
+
+      await created.send({
+        content: `👋 Xin chào ${member.user}. Đây là kênh Ticket của bạn. Nếu kênh yêu cầu API Key để chat với Gemini riêng, hãy nhắn \`key: <GEMINI_API_KEY_CỦA_BẠN>\` tại đây.`,
+        components: [row1, row2],
+      }).catch(() => {});
+
       await interaction.reply({ content: `✅ Đã tạo kênh Ticket: <#${created.id}>`, ephemeral: true }).catch(() => {});
       return true;
     }
