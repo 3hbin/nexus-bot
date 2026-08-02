@@ -1,255 +1,197 @@
 // TicketManager.js
-// Quản lý hệ thống Ticket Chat AI riêng biệt cho server Discord
+// Quản lý Ticket channels (đơn giản): lưu tickets, tạo kênh ticket, lưu API key riêng cho ticket
 const fs = require('fs').promises;
 const path = require('path');
 const {
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
+  EmbedBuilder,
   ChannelType,
   PermissionFlagsBits,
 } = require('discord.js');
 
 const TICKETS_FILE = path.join(__dirname, 'data', 'tickets.json');
-const activeTickets = new Map(); // channelId -> ticketData
+
+let tickets = new Map(); // key: channelId, value: { channelId, userApiKey?, selectedModel? }
 
 async function ensureDataDir() {
   const dir = path.dirname(TICKETS_FILE);
   try {
     await fs.mkdir(dir, { recursive: true });
-  } catch (err) {}
+  } catch (err) {
+    console.error('TicketManager: Lỗi khi tạo thư mục data:', err);
+  }
 }
 
 async function loadTickets() {
   try {
-    const data = await fs.readFile(TICKETS_FILE, 'utf8');
-    const parsed = JSON.parse(data);
-    for (const [chId, info] of Object.entries(parsed || {})) {
-      activeTickets.set(chId, info);
+    await ensureDataDir();
+    const content = await fs.readFile(TICKETS_FILE, 'utf8').catch((e) => {
+      if (e && e.code === 'ENOENT') return null;
+      throw e;
+    });
+    if (!content) {
+      tickets = new Map();
+      console.log('TicketManager: Không tìm thấy file tickets, khởi tạo mới.');
+      return;
     }
-    console.log(`📂 Loaded ${activeTickets.size} tickets from storage.`);
+    const obj = JSON.parse(content || '{}');
+    tickets = new Map(Object.entries(obj));
+    // normalize values (they might be saved as objects)
+    for (const [k, v] of tickets.entries()) {
+      try {
+        const parsed = typeof v === 'string' ? JSON.parse(v) : v;
+        tickets.set(k, parsed || { channelId: k });
+      } catch {
+        tickets.set(k, v || { channelId: k });
+      }
+    }
+    console.log(`TicketManager: Loaded ${tickets.size} tickets.`);
   } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.error('❌ Lỗi đọc file tickets.json:', err);
-    }
+    console.error('TicketManager: Lỗi loadTickets:', err);
+    tickets = new Map();
   }
 }
 
 async function saveTickets() {
   try {
     await ensureDataDir();
-    const obj = Object.fromEntries(activeTickets);
+    const obj = Object.fromEntries(tickets);
     await fs.writeFile(TICKETS_FILE, JSON.stringify(obj, null, 2), 'utf8');
   } catch (err) {
-    console.error('❌ Lỗi ghi file tickets.json:', err);
+    console.error('TicketManager: Lỗi saveTickets:', err);
   }
 }
 
 async function syncTicketsOnStartup(client) {
-  for (const [channelId, data] of activeTickets.entries()) {
-    try {
-      const channel = await client.channels.fetch(channelId).catch(() => null);
-      if (!channel) {
-        activeTickets.delete(channelId);
+  // Optional: ensure that stored channelIds still exist
+  try {
+    if (!client) return;
+    for (const [channelId, info] of tickets.entries()) {
+      try {
+        const ch = await client.channels.fetch(channelId).catch(() => null);
+        if (!ch) {
+          console.log(`TicketManager: Channel ${channelId} không tồn tại nữa, xoá ticket local.`);
+          tickets.delete(channelId);
+        }
+      } catch (err) {
+        // ignore per-channel errors
       }
-    } catch (e) {
-      activeTickets.delete(channelId);
     }
+    await saveTickets();
+  } catch (err) {
+    console.error('TicketManager: syncTicketsOnStartup error:', err);
   }
-  await saveTickets();
 }
 
 function getTicketByChannel(channelId) {
-  return activeTickets.get(channelId) || null;
+  return tickets.get(String(channelId)) || null;
 }
 
-function setTicketApiKey(channelId, apiKey) {
-  const ticket = activeTickets.get(channelId);
-  if (ticket) {
-    ticket.userApiKey = apiKey;
-    activeTickets.set(channelId, ticket);
-    saveTickets();
+async function setTicketApiKey(channelId, apiKey) {
+  try {
+    const key = String(channelId);
+    const existing = tickets.get(key) || { channelId: key, userApiKey: null, selectedModel: null };
+    existing.userApiKey = apiKey;
+    tickets.set(key, existing);
+    await saveTickets();
+    return true;
+  } catch (err) {
+    console.error('TicketManager: setTicketApiKey error:', err);
+    return false;
   }
 }
 
 async function handleSetupTicketCommand(interaction) {
-  const category = interaction.options.getChannel('category');
+  try {
+    // create an embed + button and send to the channel the command was invoked in
+    const category = interaction.options?.getChannel('category') || null;
+    const embed = new EmbedBuilder()
+      .setTitle('🎫 Ticket AI')
+      .setDescription('Nhấn nút dưới đây để tạo một kênh Ticket Chat AI. Mỗi kênh Ticket có thể cài API Key riêng bằng tin nhắn `key: <YOUR_KEY>`.')
+      .setColor(0x5865f2);
 
-  const embed = new EmbedBuilder()
-    .setTitle('🤖 Dịch Vụ Chat AI Trực Tiếp (Nexus Ticket)')
-    .setDescription(
-      'Bấm nút bên dưới để mở một kênh Chat riêng tư với AI!\n\n' +
-      '• Trò chuyện bảo mật riêng tư 1-1 với Bot.\n' +
-      '• Hỗ trợ cấu hình API Key Gemini cá nhân.\n' +
-      '• Tùy chọn chuyển đổi linh hoạt các phiên bản Model AI.'
-    )
-    .setColor('#5865F2')
-    .setFooter({ text: 'Nexus AI Ticket System' });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('open_ticket').setLabel('Tạo Ticket').setStyle(ButtonStyle.Primary)
+    );
 
-  const btn = new ButtonBuilder()
-    .setCustomId(`create_ticket_${category ? category.id : 'none'}`)
-    .setLabel('📩 Tạo Kênh Chat AI')
-    .setStyle(ButtonStyle.Primary);
-
-  const row = new ActionRowBuilder().addComponents(btn);
-
-  await interaction.reply({
-    content: '✅ Đã tạo bảng Ticket AI trong kênh!',
-    ephemeral: true,
-  });
-
-  await interaction.channel.send({ embeds: [embed], components: [row] });
+    const target = interaction.channel;
+    await target.send({ embeds: [embed], components: [row] });
+    return interaction.reply({ content: '✅ Đã gửi embed thiết lập Ticket vào kênh này.', ephemeral: true });
+  } catch (err) {
+    console.error('TicketManager: handleSetupTicketCommand error:', err);
+    try { return interaction.reply({ content: '❌ Không thể gửi embed Ticket.', ephemeral: true }); } catch (e) {}
+  }
 }
 
 async function handleTicketInteraction(interaction) {
-  if (interaction.isButton()) {
-    if (interaction.customId.startsWith('create_ticket_')) {
-      await interaction.deferReply({ ephemeral: true });
-
-      const categoryId = interaction.customId.replace('create_ticket_', '');
+  try {
+    // Handle button clicks for opening tickets
+    if (interaction.isButton() && interaction.customId === 'open_ticket') {
+      if (!interaction.guild) {
+        await interaction.reply({ content: '❌ Chỉ có thể tạo Ticket trong server.', ephemeral: true });
+        return true;
+      }
       const guild = interaction.guild;
-      const user = interaction.user;
-
-      const channelName = `ticket-${user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-
-      try {
-        const channelOptions = {
-          name: channelName,
-          type: ChannelType.GuildText,
-          permissionOverwrites: [
-            {
-              id: guild.id,
-              deny: [PermissionFlagsBits.ViewChannel],
-            },
-            {
-              id: user.id,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ReadMessageHistory,
-              ],
-            },
-            {
-              id: interaction.client.user.id,
-              allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.ManageChannels,
-              ],
-            },
-          ],
-        };
-
-        if (categoryId !== 'none') {
-          channelOptions.parent = categoryId;
-        }
-
-        const ticketChannel = await guild.channels.create(channelOptions);
-
-        const ticketInfo = {
-          channelId: ticketChannel.id,
-          userId: user.id,
-          createdAt: Date.now(),
-          userApiKey: null,
-          selectedModel: 'gemini-2.5-flash',
-        };
-
-        activeTickets.set(ticketChannel.id, ticketInfo);
-        await saveTickets();
-
-        const embed = new EmbedBuilder()
-          .setTitle(`🎉 Chào mừng ${user.username} đến với Kênh AI Ticket!`)
-          .setDescription(
-            '🔑 **Bước 1:** Nhập API Key Gemini của bạn bằng cú pháp:\n`key: <GEMINI_API_KEY_CỦA_BẠN>`\n*(Tin nhắn chứa key sẽ tự xóa để bảo mật)*\n\n' +
-            '⚙️ **Bước 2:** Bạn có thể chọn Model AI bằng menu phía dưới.'
-          )
-          .setColor('#57F287');
-
-        const selectMenu = new StringSelectMenuBuilder()
-          .setCustomId('select_ticket_model')
-          .setPlaceholder('Chọn phiên bản Gemini Model...')
-          .addOptions([
-            { label: 'Gemini 2.5 Flash (Nhanh & Mặc định)', value: 'gemini-2.5-flash' },
-            { label: 'Gemini 2.5 Pro (Thông minh cao cấp)', value: 'gemini-2.5-pro' },
-            { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
-          ]);
-
-        const closeBtn = new ButtonBuilder()
-          .setCustomId('close_ticket')
-          .setLabel('🔒 Đóng Ticket')
-          .setStyle(ButtonStyle.Danger);
-
-        const rowMenu = new ActionRowBuilder().addComponents(selectMenu);
-        const rowClose = new ActionRowBuilder().addComponents(closeBtn);
-
-        await ticketChannel.send({
-          content: `<@${user.id}>`,
-          embeds: [embed],
-          components: [rowMenu, rowClose],
-        });
-
-        await interaction.editReply(`✅ Đã tạo kênh Ticket riêng cho bạn: <#${ticketChannel.id}>`);
-      } catch (err) {
-        console.error('❌ Lỗi khi tạo ticket channel:', err);
-        await interaction.editReply('❌ Không thể tạo kênh Ticket. Hãy kiểm tra lại quyền Bot!');
+      const member = interaction.member;
+      const baseName = `ticket-${member.user.username}`.toLowerCase().replace(/[^a-z0-9\-]/g, '-').slice(0, 80);
+      // ensure unique name by adding suffix if exists
+      let finalName = baseName;
+      let count = 1;
+      while (await guild.channels.cache.find((c) => c.name === finalName)) {
+        finalName = `${baseName}-${count++}`;
       }
-      return true;
-    }
+      // create channel under same category as button message if possible
+      let parent = null;
+      try { parent = interaction.channel?.parent || null; } catch (e) { parent = null; }
 
-    if (interaction.customId === 'close_ticket') {
-      const ticket = activeTickets.get(interaction.channelId);
-      if (!ticket) {
-        await interaction.reply({ content: '❌ Kênh này không phải Ticket AI hợp lệ.', ephemeral: true });
-        return true;
-      }
-
-      await interaction.reply('🔒 Kênh Ticket sẽ tự động xoá sau 5 giây...');
-      activeTickets.delete(interaction.channelId);
-      await saveTickets();
-
-      setTimeout(async () => {
-        try {
-          await interaction.channel.delete();
-        } catch (e) {
-          console.error('❌ Lỗi xoá kênh Ticket:', e);
-        }
-      }, 5000);
-      return true;
-    }
-  }
-
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === 'select_ticket_model') {
-      const ticket = activeTickets.get(interaction.channelId);
-      if (!ticket) {
-        await interaction.reply({ content: '❌ Ticket không tồn tại hoặc đã đóng.', ephemeral: true });
-        return true;
-      }
-
-      const selected = interaction.values[0];
-      ticket.selectedModel = selected;
-      activeTickets.set(interaction.channelId, ticket);
-      await saveTickets();
-
-      await interaction.reply({
-        content: `✅ Đã chuyển đổi model sang: **${selected}**`,
-        ephemeral: true,
+      const created = await guild.channels.create({
+        name: finalName,
+        type: ChannelType.GuildText,
+        parent: parent ? parent.id : undefined,
+        permissionOverwrites: [
+          {
+            id: guild.roles.everyone,
+            deny: ['ViewChannel'],
+          },
+          {
+            id: member.user.id,
+            allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+          },
+        ],
+      }).catch((e) => {
+        console.error('TicketManager: tạo kênh ticket lỗi:', e);
+        return null;
       });
+
+      if (!created) {
+        await interaction.reply({ content: '❌ Không thể tạo kênh Ticket. Kiểm tra quyền của bot.', ephemeral: true });
+        return true;
+      }
+
+      // save ticket info
+      tickets.set(String(created.id), { channelId: String(created.id), userApiKey: null, selectedModel: null });
+      await saveTickets();
+
+      await created.send(`👋 Xin chào ${member.user}. Đây là kênh Ticket của bạn. Nếu kênh yêu cầu API Key để chat với Gemini riêng, hãy nhắn \`key: <GEMINI_API_KEY_CỦA_BẠN>\` tại đây.`).catch(() => {});
+      await interaction.reply({ content: `✅ Đã tạo kênh Ticket: <#${created.id}>`, ephemeral: true }).catch(() => {});
       return true;
     }
-  }
 
-  return false;
+    // Handle other ticket-specific interactions in future
+    return false;
+  } catch (err) {
+    console.error('TicketManager: handleTicketInteraction error:', err);
+    return false;
+  }
 }
 
 module.exports = {
   loadTickets,
-  saveTickets,
   syncTicketsOnStartup,
-  getTicketByChannel,
-  setTicketApiKey,
   handleSetupTicketCommand,
   handleTicketInteraction,
+  getTicketByChannel,
+  setTicketApiKey,
 };
