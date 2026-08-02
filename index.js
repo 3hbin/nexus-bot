@@ -16,6 +16,7 @@ const {
 } = require('discord.js');
 
 const { GoogleGenAI } = require('@google/genai');
+const { getGifForEmotion } = require('./GifSearch.js');
 
 // ==========================================
 // CONFIG & INIT
@@ -88,37 +89,8 @@ const client = new Client({
 const userSessions = new Map();
 const allowedChannels = new Map();
 
-const GIFS = {
-  hello: [
-    'https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif',
-    'https://media.giphy.com/media/ASd0Ukj0y3qMM/giphy.gif',
-  ],
-  happy: [
-    'https://media.giphy.com/media/111ebonMs90YLu/giphy.gif',
-    'https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif',
-  ],
-  sorry: [
-    'https://media.giphy.com/media/9Y5BbDSkSTiY8/giphy.gif',
-    'https://media.giphy.com/media/xUPGcguWZHRC2HyBRS/giphy.gif',
-  ],
-  thanks: [
-    'https://media.giphy.com/media/l4FGwHEUCGILg3g0A/giphy.gif',
-    'https://media.giphy.com/media/3o7TKtnuHOHHUjR38Y/giphy.gif',
-  ],
-  thinking: [
-    'https://media.giphy.com/media/l0HlQ7LRal2p7x1Wc/giphy.gif',
-    'https://media.giphy.com/media/3o6ZtaO9BZHcOjmErm/giphy.gif',
-  ],
-};
-
-// Chọn ngẫu nhiên 1 GIF ứng với cảm xúc
-function pickGifForEmotion(emotion) {
-  const list = GIFS[emotion];
-  if (!list || list.length === 0) return null;
-  return list[Math.floor(Math.random() * list.length)];
-}
-
-// Phân tích cảm xúc đơn giản dựa trên nội dung text (regex keyword)
+// GIF theo cảm xúc giờ được lấy động qua Giphy API (xem GifSearch.js),
+// không còn hardcode link cứng dễ ít GIF + gãy link theo thời gian.
 function detectEmotion(text) {
   if (!text) return null;
   const t = text.toLowerCase();
@@ -362,7 +334,7 @@ client.on('messageCreate', async (message) => {
     if (!replyText) replyText = '🤖 Nexus AI không trả lời được nội dung này.';
 
     const emotion = detectEmotion(replyText);
-    const gifUrl = emotion ? pickGifForEmotion(emotion) : null;
+    const gifUrl = emotion ? await getGifForEmotion(emotion) : null;
 
     const DISCORD_MAX = 2000;
     if (replyText.length > DISCORD_MAX) {
