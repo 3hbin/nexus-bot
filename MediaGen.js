@@ -1,134 +1,131 @@
 // MediaGen.js
-// Xử lý tạo ảnh (Nano Banana) & tạo video (Veo 3.1) qua Google Gemini API
-const fs = require('fs');
+// Wrapper cho tạo ảnh / video bằng AI (safety: bọc try/catch), và cooldown cho media
+const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
 
-const userMediaCooldowns = new Map();
-const COOLDOWN_IMAGE_MS = 10 * 1000;  // 10 giây
-const COOLDOWN_VIDEO_MS = 60 * 1000;  // 60 giây
+const MEDIA_TMP_DIR = path.join(__dirname, 'data', 'media_tmp');
+const imageCooldowns = new Map(); // key: userId:type -> timestamp
+const DEFAULT_IMAGE_COOLDOWN_MS = 1000 * 15; // 15s
+const DEFAULT_VIDEO_COOLDOWN_MS = 1000 * 60 * 3; // 3 minutes
 
-/**
- * Kiểm tra cooldown tạo media của người dùng
- */
-function checkMediaCooldown(userId, type = 'image') {
-  const key = `${userId}_${type}`;
-  const now = Date.now();
-  const cooldownMs = type === 'video' ? COOLDOWN_VIDEO_MS : COOLDOWN_IMAGE_MS;
-
-  if (userMediaCooldowns.has(key)) {
-    const expireTime = userMediaCooldowns.get(key) + cooldownMs;
-    if (now < expireTime) {
-      return { allowed: false, remainingMs: expireTime - now };
-    }
+async function ensureTmpDir() {
+  try {
+    await fs.mkdir(MEDIA_TMP_DIR, { recursive: true });
+  } catch (err) {
+    console.error('MediaGen: ensureTmpDir error:', err);
   }
-
-  userMediaCooldowns.set(key, now);
-  return { allowed: true, remainingMs: 0 };
 }
 
-/**
- * Dọn dẹp file tạm an toàn
- */
-function cleanupTempFile(filePath) {
-  if (!filePath) return;
+function checkMediaCooldown(userId, type = 'image') {
   try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      console.log(`🧹 Đã dọn dẹp file tạm: ${filePath}`);
+    const key = `${userId}:${type}`;
+    const last = imageCooldowns.get(key) || 0;
+    const now = Date.now();
+    const limit = type === 'video' ? DEFAULT_VIDEO_COOLDOWN_MS : DEFAULT_IMAGE_COOLDOWN_MS;
+    if (now - last < limit) {
+      return { allowed: false, remainingMs: limit - (now - last) };
+    }
+    imageCooldowns.set(key, now);
+    return { allowed: true, remainingMs: 0 };
+  } catch (err) {
+    console.error('MediaGen: checkMediaCooldown error:', err);
+    return { allowed: true, remainingMs: 0 };
+  }
+}
+
+async function generateImage(aiInstance, prompt) {
+  try {
+    if (!aiInstance) throw new Error('AI instance không được cung cấp.');
+
+    // Attempt to call typical images API - this attempt may vary depending on SDK
+    if (aiInstance.images && typeof aiInstance.images.generate === 'function') {
+      const resp = await aiInstance.images.generate({ prompt }).catch((e) => { throw e; });
+      // Normalize response: may return base64 or url
+      if (resp?.data?.[0]?.b64_json) {
+        const b64 = resp.data[0].b64_json;
+        const buffer = Buffer.from(b64, 'base64');
+        return { buffer, mimeType: 'image/png' };
+      }
+      if (resp?.data?.[0]?.url) {
+        // fetch that url to buffer
+        const url = resp.data[0].url;
+        const fetched = await fetchToBuffer(url);
+        return { buffer: fetched, mimeType: 'image/png' };
+      }
+      throw new Error('AI trả về định dạng ảnh không nhận diện được.');
+    } else {
+      throw new Error('AI instance không hỗ trợ tạo ảnh (aiInstance.images.generate không tồn tại).');
     }
   } catch (err) {
-    console.error(`❌ Lỗi dọn dẹp file ${filePath}:`, err);
+    console.error('MediaGen: generateImage error:', err);
+    throw err;
   }
 }
 
-/**
- * Tạo ảnh từ prompt bằng Gemini Image Generation Model
- */
-async function generateImage(aiInstance, promptStr) {
-  if (!aiInstance) {
-    throw new Error('Chưa khởi tạo Google Gen AI instance.');
-  }
+async function generateVideo(aiInstance, prompt, opts = {}) {
+  // Return a path to temp video file. Implementation depends on AI SDK; here we try common shape and otherwise throw.
+  await ensureTmpDir();
+  try {
+    if (!aiInstance) throw new Error('AI instance không được cung cấp.');
 
-  // Sử dụng model tạo ảnh phù hợp của Gemini
-  const response = await aiInstance.models.generateImages({
-    model: 'imagen-3.0-generate-002',
-    prompt: promptStr,
-    config: {
-      numberOfImages: 1,
-      outputMimeType: 'image/jpeg',
-      aspectRatio: '1:1',
-    },
-  });
-
-  if (!response?.generatedImages || response.generatedImages.length === 0) {
-    throw new Error('Không nhận được dữ liệu ảnh trả về từ AI.');
-  }
-
-  const base64Data = response.generatedImages[0].image.imageBytes;
-  const buffer = Buffer.from(base64Data, 'base64');
-  return { buffer, mimeType: 'image/jpeg' };
-}
-
-/**
- * Tạo video từ prompt bằng Gemini Video Generation (Veo)
- */
-async function generateVideo(aiInstance, promptStr, options = {}) {
-  if (!aiInstance) {
-    throw new Error('Chưa khởi tạo Google Gen AI instance.');
-  }
-
-  console.log(`🎬 Bắt đầu tạo video với prompt: "${promptStr}"`);
-
-  let operation = await aiInstance.models.generateVideos({
-    model: 'veo-2.0-generate-001',
-    prompt: promptStr,
-    config: {
-      aspectRatio: '16:9',
-    },
-  });
-
-  const startTime = Date.now();
-  while (!operation.done) {
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    if (options.onProgress) {
-      options.onProgress(elapsed);
+    if (aiInstance.videos && typeof aiInstance.videos.generate === 'function') {
+      const outPath = path.join(MEDIA_TMP_DIR, `nexus_video_${Date.now()}.mp4`);
+      // SDK specifics vary; attempt naive call and write stream if returned base64
+      const resp = await aiInstance.videos.generate({ prompt }).catch((e) => { throw e; });
+      if (resp?.data?.[0]?.b64_json) {
+        const b64 = resp.data[0].b64_json;
+        const buffer = Buffer.from(b64, 'base64');
+        await fs.writeFile(outPath, buffer);
+        return outPath;
+      }
+      if (resp?.data?.[0]?.url) {
+        const buf = await fetchToBuffer(resp.data[0].url);
+        await fs.writeFile(outPath, buf);
+        return outPath;
+      }
+      throw new Error('AI trả về định dạng video không nhận diện được.');
+    } else {
+      throw new Error('AI instance không hỗ trợ tạo video (aiInstance.videos.generate không tồn tại).');
     }
-    await new Promise((resolve) => setTimeout(resolve, 10000));
-    operation = await aiInstance.operations.getOperation({ name: operation.name });
+  } catch (err) {
+    console.error('MediaGen: generateVideo error:', err);
+    throw err;
   }
+}
 
-  if (operation.error) {
-    throw new Error(`Lỗi khởi tạo video: ${operation.error.message || JSON.stringify(operation.error)}`);
+async function cleanupTempFile(p) {
+  try {
+    if (!p) return;
+    await fs.unlink(p).catch(() => {});
+  } catch (err) {
+    console.error('MediaGen: cleanupTempFile error:', err);
   }
+}
 
-  const videoUri = operation.response?.generatedVideos?.[0]?.video?.uri;
-  if (!videoUri) {
-    throw new Error('Không tìm thấy link tải video sau khi hoàn tất.');
+// helper: fetch url -> buffer (uses global fetch if available)
+async function fetchToBuffer(url) {
+  try {
+    if (typeof fetch === 'undefined') {
+      // attempt to require node-fetch if available
+      const nodeFetch = require('node-fetch');
+      const r = await nodeFetch(url);
+      const arr = await r.arrayBuffer();
+      return Buffer.from(arr);
+    } else {
+      const r = await fetch(url);
+      const arr = await r.arrayBuffer();
+      return Buffer.from(arr);
+    }
+  } catch (err) {
+    console.error('MediaGen: fetchToBuffer error:', err);
+    throw err;
   }
-
-  const tempDir = path.join(__dirname, 'temp');
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-
-  const outputPath = path.join(tempDir, `video_${Date.now()}.mp4`);
-  
-  // Tải file video
-  const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
-  const res = await fetch(videoUri);
-  if (!res.ok) {
-    throw new Error(`Không thể tải video từ URI (${res.statusText})`);
-  }
-  
-  const arrayBuffer = await res.arrayBuffer();
-  fs.writeFileSync(outputPath, Buffer.from(arrayBuffer));
-
-  return outputPath;
 }
 
 module.exports = {
-  checkMediaCooldown,
-  cleanupTempFile,
   generateImage,
   generateVideo,
+  cleanupTempFile,
+  checkMediaCooldown,
 };

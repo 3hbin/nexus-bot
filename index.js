@@ -15,6 +15,10 @@ const {
   PermissionFlagsBits,
   ChannelType,
   AttachmentBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
 } = require('discord.js');
 
 const { GoogleGenAI } = require('@google/genai');
@@ -60,6 +64,16 @@ if (!DISCORD_TOKEN) {
 }
 if (!GEMINI_API_KEY) {
   console.error('❌ Thiếu GEMINI_API_KEY trong Environment Variables trên Render!');
+}
+
+// ensure data dir helper
+async function ensureDataDir() {
+  const dir = path.join(__dirname, 'data');
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch (err) {
+    console.error('❌ Lỗi khi tạo thư mục data:', err);
+  }
 }
 
 // ==========================================
@@ -119,15 +133,6 @@ function detectEmotion(text) {
 // ==========================================
 // PERSISTENCE: LOAD & SAVE ALLOWED CHANNELS
 // ==========================================
-async function ensureDataDir() {
-  const dir = path.dirname(ALLOWED_CHANNELS_FILE);
-  try {
-    await fs.mkdir(dir, { recursive: true });
-  } catch (err) {
-    console.error('❌ Lỗi khi tạo thư mục data:', err);
-  }
-}
-
 async function saveAllowedChannelsToFile() {
   try {
     await ensureDataDir();
@@ -150,6 +155,7 @@ function scheduleSaveAllowedChannels(delay = 200) {
 
 async function loadAllowedChannelsFromFile() {
   try {
+    await ensureDataDir();
     const content = await fs.readFile(ALLOWED_CHANNELS_FILE, 'utf8');
     const obj = JSON.parse(content);
     for (const [guildId, channelId] of Object.entries(obj || {})) {
@@ -157,7 +163,7 @@ async function loadAllowedChannelsFromFile() {
     }
     console.log(`📂 Loaded allowedChannels from ${ALLOWED_CHANNELS_FILE}`);
   } catch (err) {
-    if (err.code === 'ENOENT') {
+    if (err && err.code === 'ENOENT') {
       console.log('📂 Khởi tạo file allowedChannels mới.');
     } else {
       console.error('❌ Error loading allowedChannels:', err);
@@ -238,7 +244,11 @@ client.once('ready', async () => {
   }
 
   startAutoClearScheduler(client);
-  await syncTicketsOnStartup(client).catch((e) => console.error('Lỗi syncTickets:', e));
+  try {
+    await syncTicketsOnStartup(client);
+  } catch (e) {
+    console.error('Lỗi syncTickets:', e);
+  }
 });
 
 // ==========================================
@@ -365,7 +375,7 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         const { buffer, mimeType } = await generateImage(aiInstance, promptStr);
-        const ext = mimeType.includes('png') ? 'png' : 'jpg';
+        const ext = mimeType && mimeType.includes('png') ? 'png' : 'jpg';
         const attachment = new AttachmentBuilder(buffer, { name: `nexus_image.${ext}` });
         return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
@@ -497,6 +507,7 @@ client.on('messageCreate', async (message) => {
     const chat = userSessions.get(sessionKey);
     let result;
     try {
+      // Bọc try/catch riêng cho gọi API Gemini
       result = await chat.sendMessage({ message: prompt });
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
@@ -536,8 +547,7 @@ client.on('messageCreate', async (message) => {
 (async () => {
   try {
     // 1. Tạo sẵn thư mục data
-    const dataDir = path.join(__dirname, 'data');
-    await fs.mkdir(dataDir, { recursive: true }).catch(() => {});
+    await ensureDataDir();
 
     // 2. Load các file cấu hình một cách an toàn
     await loadAllowedChannelsFromFile().catch((e) => console.error('Lỗi load allowedChannels:', e));
