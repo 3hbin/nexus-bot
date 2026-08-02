@@ -1,5 +1,6 @@
 // index.js
-// Nexus AI Discord Bot (Node.js, discord.js v14) tích hợp Google Gemini + Express (keep-alive)
+// Nexus AI Discord Bot (Node.js, discord.js v14)
+// Tích hợp Google Gemini, Interest.js (Shield anti-toxic/spam), MediaGen & GifSearch
 require('dotenv').config();
 
 const express = require('express');
@@ -13,10 +14,25 @@ const {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  AttachmentBuilder,
 } = require('discord.js');
 
 const { GoogleGenAI } = require('@google/genai');
+
+// Import các module nội bộ
 const { getGifForEmotion } = require('./GifSearch.js');
+const {
+  getEnhancedSystemInstruction,
+  handleInterestQuery,
+  handleToxicBehavior,
+  checkCooldown,
+} = require('./Interest.js');
+const {
+  generateImage,
+  generateVideo,
+  cleanupTempFile,
+  checkMediaCooldown,
+} = require('./MediaGen.js');
 
 // ==========================================
 // CONFIG & INIT
@@ -25,7 +41,8 @@ const PORT = process.env.PORT || 3000;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const ALLOWED_CHANNELS_FILE = process.env.ALLOWED_CHANNELS_FILE ||
+const ALLOWED_CHANNELS_FILE =
+  process.env.ALLOWED_CHANNELS_FILE ||
   path.join(__dirname, 'data', 'allowedChannels.json');
 
 if (!DISCORD_TOKEN) {
@@ -49,25 +66,15 @@ app.listen(PORT, () => {
 });
 
 // ==========================================
-// GOOGLE GEMINI: khởi tạo client + model
+// GOOGLE GEMINI: Khởi tạo client & Prompt
 // ==========================================
-// QUAN TRỌNG: "systemInstruction" được truyền qua config: { systemInstruction } khi tạo chat
-// bằng ai.chats.create() (chuẩn của SDK @google/genai), không nhét vào history dạng
-// role:"user"/"model" nữa -> tránh lỗi INVALID_ARGUMENT.
-// SDK mới @google/genai (thay thế @google/generative-ai đã bị Google khai tử,
-// kho GitHub cũ đã archive từ 16/12/2025 và không còn hỗ trợ đầy đủ các model Gemini 2.0+).
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-const SYSTEM_INSTRUCTION =
+const BASE_INSTRUCTION =
   'Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm. ' +
-  'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. ' +
-  'Trả lời ngắn gọn, rõ ràng.';
+  'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. Trả lời ngắn gọn, rõ ràng.';
+const SYSTEM_INSTRUCTION = getEnhancedSystemInstruction(BASE_INSTRUCTION);
 
-// LƯU Ý QUAN TRỌNG:
-// - 'gemini-1.5-flash' và 'gemini-2.0-flash' ĐÃ SHUTDOWN HOÀN TOÀN -> luôn trả 404.
-// - 'gemini-2.5-flash' vẫn hoạt động cho user/project CŨ, nhưng Google đã NGỪNG CẤP quyền
-//   dùng model này cho API key/project MỚI TẠO (lỗi: "no longer available to new users").
-// -> Dùng 'gemini-3.5-flash' (bản mới nhất, hiện đang mở cho mọi user, chưa có lịch shutdown).
 const MODEL_NAME = 'gemini-3.5-flash';
 
 // ==========================================
@@ -84,13 +91,11 @@ const client = new Client({
 });
 
 // ==========================================
-// BỘ NHỚ & CẤU HÌNH GIF
+// BỘ NHỚ & PHÁT HIỆN CẢM XÚC
 // ==========================================
 const userSessions = new Map();
 const allowedChannels = new Map();
 
-// GIF theo cảm xúc giờ được lấy động qua Giphy API (xem GifSearch.js),
-// không còn hardcode link cứng dễ ít GIF + gãy link theo thời gian.
 function detectEmotion(text) {
   if (!text) return null;
   const t = text.toLowerCase();
@@ -104,7 +109,7 @@ function detectEmotion(text) {
 }
 
 // ==========================================
-// Persistence: load & save allowedChannels
+// PERSISTENCE (Lưu allowedChannels)
 // ==========================================
 async function ensureDataDir() {
   const dir = path.dirname(ALLOWED_CHANNELS_FILE);
@@ -126,12 +131,11 @@ async function saveAllowedChannelsToFile() {
   }
 }
 
-// Debounce việc ghi file để tránh ghi liên tục khi có nhiều thay đổi gần nhau
 let saveTimeout = null;
 function scheduleSaveAllowedChannels(delay = 200) {
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => {
-    saveAllowedChannelsToFile().catch(err => console.error('❌ Lỗi scheduleSave:', err));
+    saveAllowedChannelsToFile().catch((err) => console.error('❌ Lỗi scheduleSave:', err));
     saveTimeout = null;
   }, delay);
 }
@@ -154,7 +158,7 @@ async function loadAllowedChannelsFromFile() {
 }
 
 // ==========================================
-// SLASH COMMANDS
+// SLASH COMMANDS DEFINITION
 // ==========================================
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ kết nối của Bot'),
@@ -168,7 +172,17 @@ const commands = [
     .setDescription('Bỏ thiết lập kênh duy nhất (Chỉ Admin)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Hiển thị trạng thái hiện tại của Nexus AI trong server này'),
-].map(cmd => cmd.toJSON());
+
+  // Media Generation Commands
+  new SlashCommandBuilder()
+    .setName('imagine')
+    .setDescription('Tạo ảnh bằng AI (Nano Banana)')
+    .addStringOption((opt) => opt.setName('prompt').setDescription('Mô tả ảnh bạn muốn tạo').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('video')
+    .setDescription('Tạo video ngắn bằng AI (Veo 3.1, có thể mất tới vài phút)')
+    .addStringOption((opt) => opt.setName('prompt').setDescription('Mô tả video bạn muốn tạo').setRequired(true)),
+].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 
@@ -204,50 +218,83 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === 'setchannel') {
-      if (!guildId) {
-        return interaction.reply({ content: '❌ Lệnh này chỉ có thể dùng trong server.', ephemeral: true });
-      }
+      if (!guildId) return interaction.reply({ content: '❌ Lệnh này chỉ có thể dùng trong server.', ephemeral: true });
       allowedChannels.set(guildId, channelId);
       scheduleSaveAllowedChannels();
       return interaction.reply(`✅ Đã thiết lập <#${channelId}> làm kênh trò chuyện duy nhất cho Nexus AI!`);
     }
 
     if (commandName === 'unsetchannel') {
-      if (!guildId) {
-        return interaction.reply({ content: '❌ Lệnh này chỉ có thể dùng trong server.', ephemeral: true });
-      }
+      if (!guildId) return interaction.reply({ content: '❌ Lệnh này chỉ có thể dùng trong server.', ephemeral: true });
       if (allowedChannels.has(guildId)) {
         allowedChannels.delete(guildId);
         scheduleSaveAllowedChannels();
-        return interaction.reply(`✅ Đã bỏ thiết lập kênh duy nhất cho server này. Nexus AI sẽ phản hồi khi được mention hoặc trong DM.`);
-      } else {
-        return interaction.reply({ content: 'ℹ️ Server này chưa thiết lập kênh duy nhất.', ephemeral: true });
+        return interaction.reply(`✅ Đã bỏ thiết lập kênh duy nhất cho server này.`);
       }
+      return interaction.reply({ content: 'ℹ️ Server này chưa thiết lập kênh duy nhất.', ephemeral: true });
     }
 
     if (commandName === 'status') {
       const activeSessions = userSessions.size;
-      if (!guildId) {
+      const tgt = guildId ? allowedChannels.get(guildId) : null;
+      const channelInfo = tgt ? `<#${tgt}> (\`${tgt}\`)` : 'Chưa thiết lập (phản hồi khi được mention hoặc trong DM)';
+      return interaction.reply({
+        content: `📡 **Nexus AI Status**:\n- Kênh hiện tại: ${channelInfo}\n- Active sessions: **${activeSessions}**\n- Model: **${MODEL_NAME}**`,
+        ephemeral: true,
+      });
+    }
+
+    // --- Slash Commands Media Generation ---
+    if (commandName === 'imagine') {
+      const cooldown = checkMediaCooldown(user.id, 'image');
+      if (!cooldown.allowed) {
         return interaction.reply({
-          content: `📡 Nexus AI Status (DM):\n- Active sessions: **${activeSessions}**\n- Model: **${MODEL_NAME}**`,
-          ephemeral: true,
-        });
-      } else {
-        const tgt = allowedChannels.get(guildId);
-        const channelInfo = tgt ? `<#${tgt}> (\`${tgt}\`)` : 'Chưa thiết lập (bot phản hồi khi được mention hoặc trong DM)';
-        return interaction.reply({
-          content:
-            `📡 Nexus AI Status (Server):\n- Kênh hiện tại: ${channelInfo}\n- Active sessions tổng: **${activeSessions}**\n- Model: **${MODEL_NAME}**`,
+          content: `⏳ Từ từ đã bạn ơi, chờ ${Math.ceil(cooldown.remainingMs / 1000)}s nữa nha!`,
           ephemeral: true,
         });
       }
+      const prompt = interaction.options.getString('prompt');
+      await interaction.deferReply();
+      try {
+        const { buffer, mimeType } = await generateImage(ai, prompt);
+        const ext = mimeType.includes('png') ? 'png' : 'jpg';
+        const attachment = new AttachmentBuilder(buffer, { name: `nexus_image.${ext}` });
+        return interaction.editReply({ content: `🎨 Đây rồi: "${prompt}"`, files: [attachment] });
+      } catch (err) {
+        console.error('❌ Lỗi tạo ảnh:', err);
+        return interaction.editReply('❌ Rất tiếc, không tạo được ảnh lúc này. Thử lại sau nha!');
+      }
+    }
+
+    if (commandName === 'video') {
+      const cooldown = checkMediaCooldown(user.id, 'video');
+      if (!cooldown.allowed) {
+        return interaction.reply({
+          content: `⏳ Video tốn tài nguyên lắm, chờ ${Math.ceil(cooldown.remainingMs / 1000)}s nữa nha!`,
+          ephemeral: true,
+        });
+      }
+      const prompt = interaction.options.getString('prompt');
+      await interaction.deferReply();
+      await interaction.editReply('🎬 Đang dựng video, có thể mất 1-6 phút, chờ tớ xíu nha...');
+      let videoPath;
+      try {
+        videoPath = await generateVideo(ai, prompt, {
+          onProgress: (s) => console.log(`⏳ Đang tạo video... ${s}s`),
+        });
+        const attachment = new AttachmentBuilder(videoPath, { name: 'nexus_video.mp4' });
+        await interaction.editReply({ content: `🎬 Video của bạn đây: "${prompt}"`, files: [attachment] });
+      } catch (err) {
+        console.error('❌ Lỗi tạo video:', err);
+        await interaction.editReply('❌ Rất tiếc, không tạo được video lúc này. Thử lại sau nha!');
+      } finally {
+        if (videoPath) cleanupTempFile(videoPath);
+      }
     }
   } catch (err) {
-    console.error('❌ Lỗi khi xử lý interaction:', err);
-    if (interaction.replied || interaction.deferred) {
-      try { await interaction.editReply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch (e) { console.error('❌ Lỗi editReply:', e); }
-    } else {
-      try { await interaction.reply('❌ Có lỗi xảy ra khi xử lý lệnh.'); } catch (e) { console.error('❌ Lỗi reply:', e); }
+    console.error('❌ Lỗi xử lý interaction:', err);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '❌ Có lỗi xảy ra khi xử lý lệnh!', ephemeral: true }).catch(() => {});
     }
   }
 });
@@ -264,32 +311,41 @@ client.on('messageCreate', async (message) => {
   const targetChannel = guildId ? allowedChannels.get(guildId) : null;
   const isMentioned = message.mentions.has(client.user);
 
-  // Nếu server đã setchannel -> chỉ phản hồi trong kênh đó
+  // Lọc kênh trò chuyện
   if (!isDM && targetChannel && message.channel.id !== targetChannel) return;
-  // Nếu chưa setchannel -> chỉ phản hồi khi được mention (hoặc trong DM)
   if (!isDM && !targetChannel && !isMentioned) return;
 
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
 
   if (!prompt) {
-    try {
-      await message.reply('Bạn cần Nexus AI hỗ trợ gì nào?');
-    } catch (err) {
-      console.error('❌ Lỗi khi gửi phản hồi cho tin nhắn rỗng:', err);
-    }
-    return;
+    return message.reply('Bạn cần Nexus AI hỗ trợ gì nào?').catch(console.error);
   }
 
+  // 1. Kiểm tra Cooldown chống spam
+  const cooldown = checkCooldown(userId);
+  if (!cooldown.allowed) {
+    const seconds = Math.ceil(cooldown.remainingMs / 1000);
+    return message.reply(`⏳ Từ từ đã bạn ơi, đợi ${seconds}s nữa rồi nhắn tiếp nha!`);
+  }
+
+  // 2. Chặn Trẻ trâu / Toxic offline (Không tiêu tốn Gemini API Token)
+  const toxicReply = handleToxicBehavior(prompt);
+  if (toxicReply) {
+    return message.reply(toxicReply);
+  }
+
+  // 3. Trả lời nhanh sở thích offline (Không tiêu tốn API)
+  const interestReply = handleInterestQuery(prompt);
+  if (interestReply) {
+    return message.reply(interestReply);
+  }
+
+  // 4. Gọi Gemini AI
   try {
     await message.channel.sendTyping();
-  } catch (err) {
-    console.warn('⚠️ Lỗi khi gửi typing indicator:', err);
-  }
+  } catch (e) {}
 
   try {
-    // Tạo session chat mới cho user nếu chưa có.
-    // SDK mới: ai.chats.create({ model, config: { systemInstruction } }).
-    // History bắt đầu trống -> không cần giả lập role "system" nữa.
     if (!userSessions.has(userId)) {
       const chatSession = ai.chats.create({
         model: MODEL_NAME,
@@ -303,39 +359,14 @@ client.on('messageCreate', async (message) => {
     }
 
     const chat = userSessions.get(userId);
+    const result = await chat.sendMessage({ message: prompt });
+    const replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
 
-    let result;
-    try {
-      // SDK mới nhận message dạng object { message: "..." } thay vì truyền string trực tiếp.
-      result = await chat.sendMessage({ message: prompt });
-    } catch (apiErr) {
-      console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
-      try {
-        await message.reply('❌ Rất tiếc, không thể liên lạc với Gemini API ngay lúc này. Hãy thử lại sau hoặc dùng `/reset`.');
-      } catch (replyErr) {
-        console.error('❌ Lỗi khi gửi phản hồi lỗi tới user:', replyErr);
-      }
-      return;
-    }
-
-    let replyText = '';
-    try {
-      // SDK mới trả text trực tiếp qua thuộc tính .text (không phải hàm .text()).
-      if (result && typeof result.text === 'string') {
-        replyText = result.text;
-      } else {
-        replyText = '🤖 Nexus AI đã trả về nội dung không xác định.';
-      }
-    } catch (err) {
-      console.error('❌ Lỗi khi lấy text từ kết quả Gemini:', err);
-      replyText = '❌ Rất tiếc, có lỗi khi xử lý phản hồi từ Gemini.';
-    }
-
-    if (!replyText) replyText = '🤖 Nexus AI không trả lời được nội dung này.';
-
+    // Phát hiện cảm xúc & Lấy GIF từ Giphy API
     const emotion = detectEmotion(replyText);
     const gifUrl = emotion ? await getGifForEmotion(emotion) : null;
 
+    // Xử lý gửi tin nhắn Discord (Chia chunk nếu >2000 ký tự)
     const DISCORD_MAX = 2000;
     if (replyText.length > DISCORD_MAX) {
       const safeChunkSize = 1900;
@@ -343,68 +374,54 @@ client.on('messageCreate', async (message) => {
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         if (i === chunks.length - 1 && gifUrl) {
-          try {
-            await message.reply(`${chunk}\n\n${gifUrl}`);
-          } catch (sendErr) {
-            console.error('❌ Lỗi khi gửi chunk cuối với GIF:', sendErr);
-          }
+          await message.reply(`${chunk}\n\n${gifUrl}`);
         } else {
-          try {
-            await message.reply(chunk);
-          } catch (sendErr) {
-            console.error('❌ Lỗi khi gửi chunk tới Discord:', sendErr);
-          }
+          await message.reply(chunk);
         }
       }
     } else {
-      try {
-        if (gifUrl) {
-          await message.reply(`${replyText}\n\n${gifUrl}`);
-        } else {
-          await message.reply(replyText);
-        }
-      } catch (sendErr) {
-        console.error('❌ Lỗi khi gửi phản hồi tới Discord:', sendErr);
+      if (gifUrl) {
+        await message.reply(`${replyText}\n\n${gifUrl}`);
+      } else {
+        await message.reply(replyText);
       }
     }
   } catch (error) {
-    console.error('❌ Lỗi khi xử lý messageCreate:', error);
-    try {
-      await message.reply('❌ Đã có lỗi xảy ra khi xử lý yêu cầu của bạn. Hãy thử lại hoặc dùng `/reset`.');
-    } catch (replyErr) {
-      console.error('❌ Lỗi khi gửi thông báo lỗi tới user:', replyErr);
+    console.error('❌ Lỗi khi xử lý messageCreate với Gemini API:', error);
+    if (error.status === 429) {
+      message.reply('Hệ thống đang bận tí xíu do quá nhiều lượt hỏi, chờ tớ 1 phút nhé! 😅');
+    } else {
+      message.reply('❌ Rất tiếc, có chút trục trặc kĩ thuật. Thử lại sau hoặc dùng `/reset` nhé!');
     }
   }
 });
 
 // ==========================================
-// KHỞI TẠO
+// KHỞI TẠO BOT
 // ==========================================
 (async () => {
   try {
     await loadAllowedChannelsFromFile();
     await client.login(DISCORD_TOKEN);
-    console.log('🔐 Đã gọi client.login()');
+    console.log('🔐 Đã đăng nhập Discord thành công!');
   } catch (err) {
-    console.error('❌ Lỗi khi khởi động bot:', err);
+    console.error('❌ Lỗi khởi động bot:', err);
     process.exit(1);
   }
 })();
 
+// Xử lý lưu trước khi dừng app trên Render
 process.on('beforeExit', () => {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-    saveTimeout = null;
-  }
-  saveAllowedChannelsToFile().catch(err => console.error('❌ Lỗi khi lưu trước khi thoát:', err));
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveAllowedChannelsToFile().catch((err) => console.error('❌ Lỗi lưu trước khi thoát:', err));
 });
 
 process.on('SIGINT', async () => {
-  try { await saveAllowedChannelsToFile(); } catch (err) { console.error('❌ Lỗi SIGINT save:', err); }
+  await saveAllowedChannelsToFile().catch(() => {});
   process.exit();
 });
 
 process.on('SIGTERM', async () => {
-  try { await saveAllowedChannelsToFile(); } catch (err) { console.error('❌ Lỗi SIGTERM save:', err); }
+  await saveAllowedChannelsToFile().catch(() => {});
   process.exit();
 });
