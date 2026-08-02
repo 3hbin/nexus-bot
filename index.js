@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const express = require('express');
 
@@ -31,16 +31,73 @@ const client = new Client({
   ],
 });
 
-// Bộ nhớ đệm lưu Chat History và Kênh được chỉ định
-const userSessions = new Map(); // Lưu lịch sử chat cá nhân
-const allowedChannels = new Map(); // Lưu kênh được phép chat của từng Server
+// Bộ nhớ đệm
+const userSessions = new Map();
+const allowedChannels = new Map();
 
-client.once('ready', () => {
-  console.log(`✅ Bot ${client.user.tag} đã online thành công!`);
+// ==========================================
+// 3. ĐĂNG KÝ SLASH COMMANDS VỚI DISCORD
+// ==========================================
+const commands = [
+  new SlashCommandBuilder()
+    .setName('ping')
+    .setDescription('Kiểm tra độ trễ kết nối của Bot'),
+  new SlashCommandBuilder()
+    .setName('reset')
+    .setDescription('Xóa lịch sử trò chuyện cá nhân với Nexus AI'),
+  new SlashCommandBuilder()
+    .setName('setchannel')
+    .setDescription('Cài đặt kênh duy nhất cho phép Nexus AI hoạt động (Chỉ Admin)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+];
+
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+client.once('ready', async () => {
+  console.log(`✅ Bot ${client.user.tag} đã online!`);
+  
+  try {
+    console.log('🔄 Đang đăng ký Slash Commands lên Discord...');
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
+    console.log('🎉 Đã đăng ký Slash Commands thành công!');
+  } catch (error) {
+    console.error('❌ Lỗi khi đăng ký Slash Commands:', error);
+  }
 });
 
 // ==========================================
-// 3. XỬ LÝ LỆNH VÀ TIN NHẮN
+// 4. XỬ LÝ SLASH COMMANDS (Menu gõ /)
+// ==========================================
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName, user, guildId, channelId } = interaction;
+
+  // Lệnh /ping
+  if (commandName === 'ping') {
+    const sent = await interaction.reply({ content: '🏓 Ping...', fetchReply: true });
+    const latency = sent.createdTimestamp - interaction.createdTimestamp;
+    return interaction.editReply(`🏓 **Pong!**\n⚡ Độ trễ Bot: \`${latency}ms\`\n🌐 WebSocket: \`${client.ws.ping}ms\``);
+  }
+
+  // Lệnh /reset
+  if (commandName === 'reset') {
+    userSessions.delete(user.id);
+    return interaction.reply('🔄 Đã xóa bộ nhớ lịch sử trò chuyện của bạn! Chúng ta có thể bắt đầu chủ đề mới.');
+  }
+
+  // Lệnh /setchannel
+  if (commandName === 'setchannel') {
+    allowedChannels.set(guildId, channelId);
+    return interaction.reply(`✅ Đã thiết lập <#${channelId}> làm kênh trò chuyện duy nhất cho Nexus AI!`);
+  }
+});
+
+// ==========================================
+// 5. XỬ LÝ TRÒ CHUYỆN AI TỰ ĐỘNG
 // ==========================================
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
@@ -49,45 +106,19 @@ client.on('messageCreate', async (message) => {
   const guildId = message.guildId;
   const userId = message.author.id;
 
-  // --- LỆNH 1: /ping (Mọi người dùng) ---
-  if (content === '/ping') {
-    const pingMsg = await message.reply('🏓 Ping...');
-    const latency = pingMsg.createdTimestamp - message.createdTimestamp;
-    return pingMsg.edit(`🏓 **Pong!**\n⚡ Độ trễ Bot: \`${latency}ms\`\n🌐 WebSocket: \`${client.ws.ping}ms\``);
-  }
-
-  // --- LỆNH 2: /setchannel (Chỉ Admin) ---
-  if (content === '/setchannel') {
-    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return message.reply('❌ Bạn cần có quyền **Administrator** (Quản trị viên) để sử dụng lệnh này!');
-    }
-    allowedChannels.set(guildId, message.channel.id);
-    return message.reply(`✅ Đã thiết lập <#${message.channel.id}> làm kênh trò chuyện duy nhất cho Nexus AI!`);
-  }
-
-  // --- LỆNH 3: /reset (Mọi người dùng - Chỉ xóa bộ nhớ cá nhân) ---
-  if (content === '/reset') {
-    userSessions.delete(userId);
-    return message.reply('🔄 Đã xóa bộ nhớ lịch sử trò chuyện của riêng bạn! Bạn có thể bắt đầu chủ đề mới.');
-  }
-
-  // --- XỬ LÝ TRÒ CHUYỆN AI GIỮA BOT VÀ USER ---
   const targetChannel = allowedChannels.get(guildId);
   const isMentioned = message.mentions.has(client.user);
 
-  // Nếu đã setchannel mà nhắn ở kênh khác -> Bỏ qua
+  // Lọc kênh và tag
   if (targetChannel && message.channel.id !== targetChannel) return;
-  // Nếu chưa setchannel, phải tag bot mới trả lời
   if (!targetChannel && !isMentioned) return;
 
-  // Lọc lấy nội dung câu hỏi (xóa tag bot và khoảng trắng thừa)
   const prompt = content.replace(/<@!?\d+>/g, '').trim();
   if (!prompt) return message.reply('Bạn cần Nexus AI hỗ trợ gì nào?');
 
   await message.channel.sendTyping();
 
   try {
-    // Tải hoặc tạo Session Chat riêng cho từng User
     if (!userSessions.has(userId)) {
       const chatSession = model.startChat({
         history: [
@@ -108,7 +139,6 @@ client.on('messageCreate', async (message) => {
     const result = await chat.sendMessage(prompt);
     const replyText = result.response.text();
 
-    // Chia nhỏ tin nhắn nếu dài hơn 2000 ký tự
     if (replyText.length > 2000) {
       const chunks = replyText.match(/[\s\S]{1,1900}/g);
       for (const chunk of chunks) {
@@ -119,11 +149,11 @@ client.on('messageCreate', async (message) => {
     }
   } catch (error) {
     console.error('Lỗi Gemini API:', error);
-    message.reply('❌ Rất tiếc, đã có lỗi xảy ra khi kết nối với AI. Hãy thử gõ `/reset` để xóa bộ nhớ hội thoại xem sao nhé.');
+    message.reply('❌ Rất tiếc, có lỗi xảy ra. Hãy thử dùng lệnh `/reset` trên menu xem sao nhé.');
   }
 });
 
 // ==========================================
-// 4. ĐĂNG NHẬP BOT
+// 6. ĐĂNG NHẬP BOT
 // ==========================================
 client.login(process.env.DISCORD_TOKEN);
