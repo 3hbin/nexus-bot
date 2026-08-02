@@ -15,7 +15,7 @@ const {
   PermissionFlagsBits,
 } = require('discord.js');
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 
 // ==========================================
 // CONFIG & INIT
@@ -50,10 +50,12 @@ app.listen(PORT, () => {
 // ==========================================
 // GOOGLE GEMINI: khởi tạo client + model
 // ==========================================
-// QUAN TRỌNG: "systemInstruction" phải được truyền TRỰC TIẾP vào getGenerativeModel().
-// Đây là chuẩn chính thức của @google/generative-ai (không nhét vào history dạng role:"user"/"model" nữa,
-// vì Gemini 1.5 KHÔNG chấp nhận role "system" trong mảng history -> gây lỗi INVALID_ARGUMENT).
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// QUAN TRỌNG: "systemInstruction" được truyền qua config: { systemInstruction } khi tạo chat
+// bằng ai.chats.create() (chuẩn của SDK @google/genai), không nhét vào history dạng
+// role:"user"/"model" nữa -> tránh lỗi INVALID_ARGUMENT.
+// SDK mới @google/genai (thay thế @google/generative-ai đã bị Google khai tử,
+// kho GitHub cũ đã archive từ 16/12/2025 và không còn hỗ trợ đầy đủ các model Gemini 2.0+).
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const SYSTEM_INSTRUCTION =
   'Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm. ' +
@@ -64,10 +66,7 @@ const SYSTEM_INSTRUCTION =
 // (shutdown) tính đến thời điểm hiện tại -> mọi request đều trả về lỗi 404 Not Found.
 // Model ổn định (GA) hiện dùng được là 'gemini-2.5-flash'.
 // Nếu muốn dùng bản mới nhất chưa có lịch ngừng hoạt động, đổi thành 'gemini-3.5-flash'.
-const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
-  systemInstruction: SYSTEM_INSTRUCTION,
-});
+const MODEL_NAME = 'gemini-2.5-flash';
 
 // ==========================================
 // DISCORD CLIENT
@@ -257,7 +256,7 @@ client.on('interactionCreate', async (interaction) => {
       const activeSessions = userSessions.size;
       if (!guildId) {
         return interaction.reply({
-          content: `📡 Nexus AI Status (DM):\n- Active sessions: **${activeSessions}**\n- Model: **gemini-2.5-flash**`,
+          content: `📡 Nexus AI Status (DM):\n- Active sessions: **${activeSessions}**\n- Model: **${MODEL_NAME}**`,
           ephemeral: true,
         });
       } else {
@@ -265,7 +264,7 @@ client.on('interactionCreate', async (interaction) => {
         const channelInfo = tgt ? `<#${tgt}> (\`${tgt}\`)` : 'Chưa thiết lập (bot phản hồi khi được mention hoặc trong DM)';
         return interaction.reply({
           content:
-            `📡 Nexus AI Status (Server):\n- Kênh hiện tại: ${channelInfo}\n- Active sessions tổng: **${activeSessions}**\n- Model: **gemini-2.5-flash**`,
+            `📡 Nexus AI Status (Server):\n- Kênh hiện tại: ${channelInfo}\n- Active sessions tổng: **${activeSessions}**\n- Model: **${MODEL_NAME}**`,
           ephemeral: true,
         });
       }
@@ -316,13 +315,14 @@ client.on('messageCreate', async (message) => {
 
   try {
     // Tạo session chat mới cho user nếu chưa có.
-    // LƯU Ý: KHÔNG truyền role "user"/"model" giả lập system prompt vào history nữa.
-    // systemInstruction đã được cấu hình sẵn ở cấp model (getGenerativeModel),
-    // nên history ở đây bắt đầu HOÀN TOÀN TRỐNG -> tránh lỗi INVALID_ARGUMENT từ Gemini API.
+    // SDK mới: ai.chats.create({ model, config: { systemInstruction } }).
+    // History bắt đầu trống -> không cần giả lập role "system" nữa.
     if (!userSessions.has(userId)) {
-      const chatSession = model.startChat({
+      const chatSession = ai.chats.create({
+        model: MODEL_NAME,
         history: [],
-        generationConfig: {
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION,
           maxOutputTokens: 1024,
         },
       });
@@ -333,7 +333,8 @@ client.on('messageCreate', async (message) => {
 
     let result;
     try {
-      result = await chat.sendMessage(prompt);
+      // SDK mới nhận message dạng object { message: "..." } thay vì truyền string trực tiếp.
+      result = await chat.sendMessage({ message: prompt });
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
       try {
@@ -346,8 +347,9 @@ client.on('messageCreate', async (message) => {
 
     let replyText = '';
     try {
-      if (result && result.response && typeof result.response.text === 'function') {
-        replyText = result.response.text();
+      // SDK mới trả text trực tiếp qua thuộc tính .text (không phải hàm .text()).
+      if (result && typeof result.text === 'string') {
+        replyText = result.text;
       } else {
         replyText = '🤖 Nexus AI đã trả về nội dung không xác định.';
       }
