@@ -1,8 +1,9 @@
 // TicketManager.js
-// Module quản lý hệ thống Ticket (Chat riêng AI + Tùy chọn Key Gemini cá nhân & Đổi Model)
+// Module quản lý Ticket Chat AI riêng tư
+// Yêu cầu Key Gemini riêng từ user & Cho phép chọn Model AI trực tiếp
 
 const fs = require('fs').promises;
-const path = require('path');
+const path = path = require('path');
 const {
   EmbedBuilder,
   ActionRowBuilder,
@@ -21,13 +22,15 @@ const BUTTON_PREFIX = 'ticket_create_ai_cat_';
 const BUTTON_ID_CLOSE_TICKET = 'ticket_close';
 const SELECT_ID_MODEL = 'ticket_select_model';
 
-// ticketsByChannel: channelId -> { userId, guildId, createdAt, userApiKey, selectedModel }
+// Quản lý bộ nhớ ticket: channelId -> { userId, guildId, createdAt, userApiKey, selectedModel }
 const ticketsByChannel = new Map();
 const ticketsByUser = new Map();
 
 async function ensureDataDir() {
   const dir = path.dirname(TICKETS_FILE);
-  try { await fs.mkdir(dir, { recursive: true }); } catch (err) {}
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch (err) {}
 }
 
 async function saveTicketsToFile() {
@@ -39,7 +42,7 @@ async function saveTicketsToFile() {
     }));
     await fs.writeFile(TICKETS_FILE, JSON.stringify(arr, null, 2), 'utf8');
   } catch (err) {
-    console.error('❌ Lỗi khi lưu tickets.json:', err);
+    console.error('❌ Lỗi khi lưu file tickets.json:', err);
   }
 }
 
@@ -69,8 +72,9 @@ async function loadTickets() {
         ticketsByUser.set(item.userId, item.channelId);
       }
     }
+    console.log(`📂 Loaded tickets from ${TICKETS_FILE} (${ticketsByChannel.size} ticket)`);
   } catch (err) {
-    if (err.code !== 'ENOENT') console.error('❌ Error loading tickets:', err);
+    if (err.code !== 'ENOENT') console.error('❌ Lỗi load tickets:', err);
   }
 }
 
@@ -87,8 +91,13 @@ async function syncTicketsOnStartup(client) {
   }
 }
 
-function getTicketChannelId(userId) { return ticketsByUser.get(userId) || null; }
-function getTicketByChannel(channelId) { return ticketsByChannel.get(channelId) || null; }
+function getTicketChannelId(userId) {
+  return ticketsByUser.get(userId) || null;
+}
+
+function getTicketByChannel(channelId) {
+  return ticketsByChannel.get(channelId) || null;
+}
 
 function registerTicket(channelId, userId, guildId) {
   const data = {
@@ -145,11 +154,12 @@ async function handleSetupTicketCommand(interaction) {
 
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle('🎫 Hỗ trợ & Private Chat AI Session')
+    .setTitle('🎫 Hỗ trợ & Chat riêng với Gemini AI')
     .setDescription(
-      'Bấm nút bên dưới để mở kênh Ticket riêng tư.\n' +
-      '• Chat 1-1 riêng biệt với Gemini AI.\n' +
-      '• Chọn Model AI tùy thích & Tự nhập API Key cá nhân.'
+      'Bấm nút bên dưới để mở kênh Chat AI riêng tư.\n\n' +
+        '• Trò chuyện bảo mật 1-1 không sợ bị loãng tin nhắn.\n' +
+        '• Tùy chọn sử dụng Gemini API Key cá nhân.\n' +
+        '• Tùy chỉnh các phiên bản Model Gemini mới nhất.'
     )
     .setFooter({ text: 'Nexus AI Ticket System' })
     .setTimestamp();
@@ -164,7 +174,9 @@ async function handleSetupTicketCommand(interaction) {
   );
 
   await interaction.reply({
-    content: categoryOption ? `✅ Đã gửi bảng Ticket (Danh mục: **${categoryOption.name}**)` : '✅ Đã gửi bảng Ticket.',
+    content: categoryOption
+      ? `✅ Đã thiết lập bảng Ticket trong danh mục: **${categoryOption.name}**`
+      : '✅ Đã thiết lập bảng Ticket.',
     embeds: [embed],
     components: [row],
   });
@@ -172,13 +184,18 @@ async function handleSetupTicketCommand(interaction) {
 
 async function handleCreateTicketButton(interaction, categoryId) {
   const { guild, user } = interaction;
-  if (!guild) return interaction.reply({ content: '❌ Chỉ áp dụng trong server.', ephemeral: true });
+  if (!guild) {
+    return interaction.reply({ content: '❌ Tính năng này chỉ dùng trong server.', ephemeral: true });
+  }
 
   const existingChannelId = getTicketChannelId(user.id);
   if (existingChannelId) {
     const existingChannel = await guild.channels.fetch(existingChannelId).catch(() => null);
     if (existingChannel) {
-      return interaction.reply({ content: `⚠️ Bạn đang mở ticket tại <#${existingChannelId}>`, ephemeral: true });
+      return interaction.reply({
+        content: `⚠️ Bạn đang có 1 ticket đang mở tại: <#${existingChannelId}>`,
+        ephemeral: true,
+      });
     }
     removeTicket(existingChannelId);
   }
@@ -190,30 +207,53 @@ async function handleCreateTicketButton(interaction, categoryId) {
       name: buildTicketChannelName(user.username),
       type: ChannelType.GuildText,
       permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
-        { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageMessages] },
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.AttachFiles,
+          ],
+        },
+        {
+          id: interaction.client.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels,
+            PermissionFlagsBits.ManageMessages,
+          ],
+        },
       ],
     };
 
-    if (categoryId && categoryId !== 'none') channelOptions.parent = categoryId;
+    if (categoryId && categoryId !== 'none') {
+      channelOptions.parent = categoryId;
+    }
 
     const ticketChannel = await guild.channels.create(channelOptions);
     registerTicket(ticketChannel.id, user.id, guild.id);
 
     const welcomeEmbed = new EmbedBuilder()
       .setColor(0x57f287)
-      .setTitle('⚙️ Cấu hình Kênh Ticket AI')
+      .setTitle('⚙️ Cấu hình Chat Ticket AI')
       .setDescription(
-        `Chào <@${user.id}>!\n\n` +
-        '🔑 **Thiết lập API Key:** Hãy gửi tin nhắn có cú pháp `key: AIzaSy...` để dùng Key Gemini cá nhân của bạn.\n' +
-        '🤖 **Chọn Model:** Sử dụng Menu bên dưới để chọn phiên bản Gemini muốn trò chuyện.'
+        `Chào mừng <@${user.id}> đến với kênh chat riêng tư!\n\n` +
+          '🔑 **Nhập Key Gemini:** Hãy gửi tin nhắn cú pháp `key: AIzaSy...` để kết nối API Key cá nhân của bạn.\n' +
+          '🤖 **Chọn Model AI:** Sử dụng menu phía dưới để chọn Model Gemini bạn muốn chat.\n\n' +
+          '*Lưu ý: Bạn bắt đầu chat sau khi đã nhập thành công API Key.*'
       )
       .setTimestamp();
 
     const selectMenu = new StringSelectMenuBuilder()
       .setCustomId(SELECT_ID_MODEL)
-      .setPlaceholder('Chọn Gemini Model...')
+      .setPlaceholder('Chọn Model Gemini...')
       .addOptions(
         new StringSelectMenuOptionBuilder()
           .setLabel('Gemini 3.6 Flash')
@@ -222,15 +262,15 @@ async function handleCreateTicketButton(interaction, categoryId) {
           .setDefault(true),
         new StringSelectMenuOptionBuilder()
           .setLabel('Gemini 3.5 Flash')
-          .setDescription('Bản Flash ổn định (05/2026)')
+          .setDescription('Bản Flash cân bằng và ổn định (05/2026)')
           .setValue('gemini-3.5-flash'),
         new StringSelectMenuOptionBuilder()
           .setLabel('Gemini 3.1 Pro')
-          .setDescription('Phục vụ phân tích, lập trình chuyên sâu')
+          .setDescription('Bản cao cấp phục vụ phân tích, lập trình chuyên sâu')
           .setValue('gemini-3.1-pro'),
         new StringSelectMenuOptionBuilder()
           .setLabel('Gemini 3.1 Flash-Lite')
-          .setDescription('Tối ưu tác vụ nhẹ, tốc độ cao')
+          .setDescription('Dòng tối ưu cho tác vụ nhẹ, chi phí thấp')
           .setValue('gemini-3.1-flash-lite')
       );
 
@@ -249,18 +289,24 @@ async function handleCreateTicketButton(interaction, categoryId) {
       components: [rowSelect, rowClose],
     });
 
-    await interaction.editReply({ content: `✅ Kênh Ticket đã tạo: <#${ticketChannel.id}>` });
+    await interaction.editReply({
+      content: `✅ Đã tạo kênh Ticket riêng cho bạn: <#${ticketChannel.id}>`,
+    });
   } catch (err) {
     console.error('❌ Lỗi tạo ticket:', err);
-    await interaction.editReply({ content: '❌ Không thể tạo Ticket. Kiểm tra lại quyền Bot.' });
+    await interaction.editReply({
+      content: '❌ Không thể tạo Ticket. Vui lòng kiểm tra quyền Manage Channels của Bot.',
+    });
   }
 }
 
 async function handleCloseTicketButton(interaction) {
   const channel = interaction.channel;
-  if (!getTicketByChannel(channel.id)) return interaction.reply({ content: '⚠️ Ticket không tồn tại.', ephemeral: true });
+  if (!getTicketByChannel(channel.id)) {
+    return interaction.reply({ content: '⚠️ Ticket không tồn tại hoặc đã đóng.', ephemeral: true });
+  }
 
-  await channel.send(`🔒 Kênh sẽ bị xóa trong **${CLOSE_COUNTDOWN_SECONDS} giây**...`);
+  await channel.send(`🔒 Ticket sẽ bị đóng và dọn dẹp sau **${CLOSE_COUNTDOWN_SECONDS} giây**...`);
   setTimeout(async () => {
     removeTicket(channel.id);
     await channel.delete().catch(() => {});
@@ -270,7 +316,8 @@ async function handleCloseTicketButton(interaction) {
 async function handleTicketInteraction(interaction) {
   if (interaction.isButton()) {
     if (interaction.customId.startsWith(BUTTON_PREFIX)) {
-      await handleCreateTicketButton(interaction, interaction.customId.replace(BUTTON_PREFIX, ''));
+      const categoryId = interaction.customId.replace(BUTTON_PREFIX, '');
+      await handleCreateTicketButton(interaction, categoryId);
       return true;
     }
     if (interaction.customId === BUTTON_ID_CLOSE_TICKET) {
@@ -282,7 +329,10 @@ async function handleTicketInteraction(interaction) {
   if (interaction.isStringSelectMenu() && interaction.customId === SELECT_ID_MODEL) {
     const selectedModel = interaction.values[0];
     setTicketModel(interaction.channelId, selectedModel);
-    await interaction.reply({ content: `🎯 Đã đổi Model AI sang: **${selectedModel}**`, ephemeral: true });
+    await interaction.reply({
+      content: `🎯 Đã đổi Model AI thành: **${selectedModel}**`,
+      ephemeral: true,
+    });
     return true;
   }
 
