@@ -56,12 +56,10 @@ const CHAT_COOLDOWN_SECONDS = 5;
 const userCooldowns = new Map();
 
 if (!DISCORD_TOKEN) {
-  console.error('❌ Missing DISCORD_TOKEN in environment variables.');
-  process.exit(1);
+  console.error('❌ Thiếu DISCORD_TOKEN trong Environment Variables trên Render!');
 }
 if (!GEMINI_API_KEY) {
-  console.error('❌ Missing GEMINI_API_KEY in environment variables.');
-  process.exit(1);
+  console.error('❌ Thiếu GEMINI_API_KEY trong Environment Variables trên Render!');
 }
 
 // ==========================================
@@ -78,7 +76,7 @@ app.listen(PORT, () => {
 // ==========================================
 // GOOGLE GEMINI CONFIG
 // ==========================================
-const aiInstance = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const aiInstance = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 const SYSTEM_INSTRUCTION =
   'Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm. ' +
@@ -160,7 +158,7 @@ async function loadAllowedChannelsFromFile() {
     console.log(`📂 Loaded allowedChannels from ${ALLOWED_CHANNELS_FILE}`);
   } catch (err) {
     if (err.code === 'ENOENT') {
-      console.log('📂 Không tìm thấy file allowedChannels, bắt đầu với cấu hình trống.');
+      console.log('📂 Khởi tạo file allowedChannels mới.');
     } else {
       console.error('❌ Error loading allowedChannels:', err);
     }
@@ -227,7 +225,7 @@ const commands = [
     ),
 ].map((cmd) => cmd.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN || 'none');
 
 client.once('ready', async () => {
   console.log(`✅ Bot ${client.user.tag} đã online!`);
@@ -240,7 +238,7 @@ client.once('ready', async () => {
   }
 
   startAutoClearScheduler(client);
-  await syncTicketsOnStartup(client);
+  await syncTicketsOnStartup(client).catch((e) => console.error('Lỗi syncTickets:', e));
 });
 
 // ==========================================
@@ -350,6 +348,10 @@ client.on('interactionCreate', async (interaction) => {
 
     // 🎨 LỆNH TẠO ẢNH (/imagine)
     if (commandName === 'imagine') {
+      if (!aiInstance) {
+        return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
+      }
+
       const cooldown = checkMediaCooldown(user.id, 'image');
       if (!cooldown.allowed) {
         return interaction.reply({
@@ -374,6 +376,10 @@ client.on('interactionCreate', async (interaction) => {
 
     // 🎬 LỆNH TẠO VIDEO (/video)
     if (commandName === 'video') {
+      if (!aiInstance) {
+        return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
+      }
+
       const cooldown = checkMediaCooldown(user.id, 'video');
       if (!cooldown.allowed) {
         return interaction.reply({
@@ -471,6 +477,10 @@ client.on('messageCreate', async (message) => {
       selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
     }
 
+    if (!activeAi) {
+      return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
+    }
+
     const sessionKey = `${message.author.id}_${message.channel.id}`;
     if (!userSessions.has(sessionKey)) {
       const chatSession = activeAi.chats.create({
@@ -525,14 +535,24 @@ client.on('messageCreate', async (message) => {
 // ==========================================
 (async () => {
   try {
-    await loadAllowedChannelsFromFile();
-    await loadAutoClearChannels();
-    await loadTickets();
-    await client.login(DISCORD_TOKEN);
-    console.log('🔐 Đã gọi client.login()');
+    // 1. Tạo sẵn thư mục data
+    const dataDir = path.join(__dirname, 'data');
+    await fs.mkdir(dataDir, { recursive: true }).catch(() => {});
+
+    // 2. Load các file cấu hình một cách an toàn
+    await loadAllowedChannelsFromFile().catch((e) => console.error('Lỗi load allowedChannels:', e));
+    await loadAutoClearChannels().catch((e) => console.error('Lỗi load autoClear:', e));
+    await loadTickets().catch((e) => console.error('Lỗi load tickets:', e));
+
+    // 3. Đăng nhập Discord nếu có token
+    if (DISCORD_TOKEN) {
+      await client.login(DISCORD_TOKEN);
+      console.log('🔐 Đã gọi client.login() thành công!');
+    } else {
+      console.error('⚠️ Không thể đăng nhập Discord vì chưa cấu hình DISCORD_TOKEN.');
+    }
   } catch (err) {
-    console.error('❌ Lỗi khi khởi động bot:', err);
-    process.exit(1);
+    console.error('❌ Lỗi khởi động nghiêm trọng:', err);
   }
 })();
 
