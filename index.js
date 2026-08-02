@@ -62,11 +62,12 @@ const SYSTEM_INSTRUCTION =
   'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. ' +
   'Trả lời ngắn gọn, rõ ràng.';
 
-// LƯU Ý QUAN TRỌNG: 'gemini-1.5-flash' và 'gemini-2.0-flash' ĐÃ BỊ GOOGLE NGỪNG HOẠT ĐỘNG
-// (shutdown) tính đến thời điểm hiện tại -> mọi request đều trả về lỗi 404 Not Found.
-// Model ổn định (GA) hiện dùng được là 'gemini-2.5-flash'.
-// Nếu muốn dùng bản mới nhất chưa có lịch ngừng hoạt động, đổi thành 'gemini-3.5-flash'.
-const MODEL_NAME = 'gemini-2.5-flash';
+// LƯU Ý QUAN TRỌNG:
+// - 'gemini-1.5-flash' và 'gemini-2.0-flash' ĐÃ SHUTDOWN HOÀN TOÀN -> luôn trả 404.
+// - 'gemini-2.5-flash' vẫn hoạt động cho user/project CŨ, nhưng Google đã NGỪNG CẤP quyền
+//   dùng model này cho API key/project MỚI TẠO (lỗi: "no longer available to new users").
+// -> Dùng 'gemini-3.5-flash' (bản mới nhất, hiện đang mở cho mọi user, chưa có lịch shutdown).
+const MODEL_NAME = 'gemini-3.5-flash';
 
 // ==========================================
 // DISCORD CLIENT
