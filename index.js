@@ -117,8 +117,13 @@ function detectEmotion(text) {
   return null;
 }
 
+// Model nào bắt buộc phải có billing mới dùng được (không có gói miễn phí)
+const PAID_ONLY_MODELS = new Set(['gemini-3.1-pro-preview']);
+
 // Rút gọn lỗi API thành 1 dòng dễ đọc, kèm gợi ý nguyên nhân phổ biến
-function formatApiError(apiErr) {
+// friendlyOnly: nếu true, với các case đã nhận diện rõ sẽ trả về 1 thông báo thân thiện gọn,
+// không kèm status/rawMsg kỹ thuật (dùng cho case chat thường, tránh làm user rối).
+function formatApiError(apiErr, modelId = null) {
   const status =
     apiErr?.status || apiErr?.code || apiErr?.response?.status || apiErr?.error?.code || 'N/A';
   const rawMsg =
@@ -128,14 +133,24 @@ function formatApiError(apiErr) {
     'Không có thông tin chi tiết.';
 
   let hint = '';
+  let friendly = null; // thông báo thân thiện, ưu tiên hiển thị nếu có
   const s = String(status);
-  if (s.includes('401') || /API key not valid|api key invalid/i.test(rawMsg)) {
+  const isQuota = s.includes('429') || /quota|rate limit/i.test(rawMsg);
+
+  if (isQuota && modelId && PAID_ONLY_MODELS.has(modelId)) {
+    friendly =
+      `💳 **Model \`${modelId}\` cần API Key có gắn thẻ thanh toán (billing) mới dùng được.**\n` +
+      `Key hiện tại chưa bật billing hoặc đã hết hạn mức trả phí, nên không thể trò chuyện bằng model này.\n\n` +
+      `**Bạn có thể:**\n` +
+      `• Bật billing cho Key tại https://aistudio.google.com, hoặc\n` +
+      `• Dùng menu "Chọn Model Gemini" phía trên để đổi sang **Gemini 3.6 Flash** hoặc **Gemini 3.5 Flash-Lite** (miễn phí, không cần billing).`;
+  } else if (s.includes('401') || /API key not valid|api key invalid/i.test(rawMsg)) {
     hint = '👉 API Key sai hoặc không hợp lệ. Hãy tạo lại Key tại https://aistudio.google.com';
   } else if (s.includes('403') || /permission|forbidden/i.test(rawMsg)) {
     hint = '👉 Key không có quyền dùng model này, hoặc chưa bật Gemini API cho project.';
   } else if (s.includes('404') || /not found|does not exist/i.test(rawMsg)) {
     hint = '👉 Model không tồn tại hoặc Key không có quyền truy cập model này. Hãy đổi Model bằng menu Ticket.';
-  } else if (s.includes('429') || /quota|rate limit/i.test(rawMsg)) {
+  } else if (isQuota) {
     hint = '👉 Đã vượt hạn mức (quota) hoặc gửi quá nhanh. Hãy đợi rồi thử lại, hoặc kiểm tra billing trên Google AI Studio.';
   } else if (s.includes('400') || /invalid argument/i.test(rawMsg)) {
     hint = '👉 Yêu cầu gửi lên không hợp lệ (có thể do tham số model không còn hỗ trợ).';
@@ -143,7 +158,7 @@ function formatApiError(apiErr) {
     hint = '👉 Lỗi mạng/timeout khi gọi Gemini API. Hãy thử lại.';
   }
 
-  return { status, rawMsg, hint };
+  return { status, rawMsg, hint, friendly };
 }
 
 // ==========================================
@@ -545,16 +560,18 @@ client.on('messageCreate', async (message) => {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
       userSessions.delete(sessionKey); // xoá session lỗi để lần sau tạo lại sạch
 
-      const { status, rawMsg, hint } = formatApiError(apiErr);
+      const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
       const keySource = usingTicketKey ? 'Key riêng của Ticket này' : 'Key mặc định của Bot';
 
-      const detailMsg =
-        `❌ **Lỗi liên lạc Gemini API**\n` +
-        `> Model: \`${selectedModel}\`\n` +
-        `> Nguồn Key: ${keySource}\n` +
-        `> Mã lỗi: \`${status}\`\n` +
-        `> Chi tiết: ${rawMsg}\n` +
-        (hint ? `\n${hint}` : '');
+      // Nếu đã nhận diện được case rõ ràng (vd: model cần billing), ưu tiên hiện thông báo thân thiện, ngắn gọn.
+      const detailMsg = friendly
+        ? friendly
+        : `❌ **Lỗi liên lạc Gemini API**\n` +
+          `> Model: \`${selectedModel}\`\n` +
+          `> Nguồn Key: ${keySource}\n` +
+          `> Mã lỗi: \`${status}\`\n` +
+          `> Chi tiết: ${rawMsg}\n` +
+          (hint ? `\n${hint}` : '');
 
       return message.reply(detailMsg.slice(0, 1900));
     }
