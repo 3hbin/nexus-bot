@@ -15,14 +15,10 @@ const {
   PermissionFlagsBits,
   ChannelType,
   AttachmentBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  EmbedBuilder,
 } = require('discord.js');
 
 const { GoogleGenAI } = require('@google/genai');
-const { getGifForEmotion } = require('./GifSearch.js');
+const { getGifForEmotion, getGifByKeyword } = require('./GifSearch.js');
 const {
   loadAutoClearChannels,
   enableAutoClear,
@@ -64,16 +60,6 @@ if (!DISCORD_TOKEN) {
 }
 if (!GEMINI_API_KEY) {
   console.error('❌ Thiếu GEMINI_API_KEY trong Environment Variables trên Render!');
-}
-
-// ensure data dir helper
-async function ensureDataDir() {
-  const dir = path.join(__dirname, 'data');
-  try {
-    await fs.mkdir(dir, { recursive: true });
-  } catch (err) {
-    console.error('❌ Lỗi khi tạo thư mục data:', err);
-  }
 }
 
 // ==========================================
@@ -133,6 +119,15 @@ function detectEmotion(text) {
 // ==========================================
 // PERSISTENCE: LOAD & SAVE ALLOWED CHANNELS
 // ==========================================
+async function ensureDataDir() {
+  const dir = path.dirname(ALLOWED_CHANNELS_FILE);
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch (err) {
+    console.error('❌ Lỗi khi tạo thư mục data:', err);
+  }
+}
+
 async function saveAllowedChannelsToFile() {
   try {
     await ensureDataDir();
@@ -155,7 +150,6 @@ function scheduleSaveAllowedChannels(delay = 200) {
 
 async function loadAllowedChannelsFromFile() {
   try {
-    await ensureDataDir();
     const content = await fs.readFile(ALLOWED_CHANNELS_FILE, 'utf8');
     const obj = JSON.parse(content);
     for (const [guildId, channelId] of Object.entries(obj || {})) {
@@ -163,7 +157,7 @@ async function loadAllowedChannelsFromFile() {
     }
     console.log(`📂 Loaded allowedChannels from ${ALLOWED_CHANNELS_FILE}`);
   } catch (err) {
-    if (err && err.code === 'ENOENT') {
+    if (err.code === 'ENOENT') {
       console.log('📂 Khởi tạo file allowedChannels mới.');
     } else {
       console.error('❌ Error loading allowedChannels:', err);
@@ -244,11 +238,7 @@ client.once('ready', async () => {
   }
 
   startAutoClearScheduler(client);
-  try {
-    await syncTicketsOnStartup(client);
-  } catch (e) {
-    console.error('Lỗi syncTickets:', e);
-  }
+  await syncTicketsOnStartup(client).catch((e) => console.error('Lỗi syncTickets:', e));
 });
 
 // ==========================================
@@ -256,6 +246,12 @@ client.once('ready', async () => {
 // ==========================================
 client.on('interactionCreate', async (interaction) => {
   try {
+    // First, allow TicketManager to handle modal submits, buttons and select menus
+    if (interaction.isModalSubmit && interaction.customId && interaction.customId.startsWith('modal_api_key')) {
+      const handledModal = await handleTicketInteraction(interaction);
+      if (handledModal) return;
+    }
+
     const handledByTicket = await handleTicketInteraction(interaction);
     if (handledByTicket) return;
 
@@ -375,7 +371,7 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         const { buffer, mimeType } = await generateImage(aiInstance, promptStr);
-        const ext = mimeType && mimeType.includes('png') ? 'png' : 'jpg';
+        const ext = mimeType.includes('png') ? 'png' : 'jpg';
         const attachment = new AttachmentBuilder(buffer, { name: `nexus_image.${ext}` });
         return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
@@ -507,7 +503,6 @@ client.on('messageCreate', async (message) => {
     const chat = userSessions.get(sessionKey);
     let result;
     try {
-      // Bọc try/catch riêng cho gọi API Gemini
       result = await chat.sendMessage({ message: prompt });
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
@@ -516,8 +511,34 @@ client.on('messageCreate', async (message) => {
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
 
-    const emotion = detectEmotion(replyText);
-    const gifUrl = emotion ? await getGifForEmotion(emotion) : null;
+    // Heuristic: extract 1-2 English keywords to search GIFs
+    function extractKeywordsEnglish(text) {
+      if (!text) return null;
+      const words = text
+        .replace(/[^A-Za-z0-9\s]/g, ' ')
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 3);
+      const unique = Array.from(new Set(words));
+      return unique.slice(0, 2).join(' ');
+    }
+
+    let gifUrl = null;
+    try {
+      const keywords = extractKeywordsEnglish(replyText);
+      if (keywords) {
+        gifUrl = await getGifByKeyword(keywords);
+      }
+    } catch (e) {
+      console.warn('❌ Lỗi khi tìm GIF bằng từ khoá:', e);
+      gifUrl = null;
+    }
+
+    // fallback to emotion-based gif
+    if (!gifUrl) {
+      const emotion = detectEmotion(replyText);
+      if (emotion) gifUrl = await getGifForEmotion(emotion);
+    }
 
     const DISCORD_MAX = 2000;
     if (replyText.length > DISCORD_MAX) {
@@ -547,7 +568,8 @@ client.on('messageCreate', async (message) => {
 (async () => {
   try {
     // 1. Tạo sẵn thư mục data
-    await ensureDataDir();
+    const dataDir = path.join(__dirname, 'data');
+    await fs.mkdir(dataDir, { recursive: true }).catch(() => {});
 
     // 2. Load các file cấu hình một cách an toàn
     await loadAllowedChannelsFromFile().catch((e) => console.error('Lỗi load allowedChannels:', e));
