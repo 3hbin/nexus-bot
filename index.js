@@ -120,7 +120,12 @@ function detectEmotion(text) {
   return null;
 }
 
-const PAID_ONLY_MODELS = new Set(['gemini-3.1-pro-preview', 'gemini-3.1-flash-image', 'veo-3.1-generate-preview']);
+const PAID_ONLY_MODELS = new Set([
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-flash-image',
+  'gemini-2.5-flash-image',
+  'veo-3.1-generate-preview',
+]);
 
 function formatApiError(apiErr, modelId = null) {
   const status =
@@ -134,23 +139,21 @@ function formatApiError(apiErr, modelId = null) {
   let hint = '';
   let friendly = null;
   const s = String(status);
-  const isQuota = s.includes('429') || /quota|rate limit/i.test(rawMsg);
+  const isQuota = s.includes('429') || /quota|rate limit|limit: 0/i.test(rawMsg);
 
-  if (isQuota && modelId && PAID_ONLY_MODELS.has(modelId)) {
+  if (isQuota) {
     friendly =
-      `💳 **Model \`${modelId}\` cần API Key có gắn thẻ thanh toán (billing) mới dùng được.**\n` +
-      `Key hiện tại chưa bật billing hoặc đã hết hạn mức trả phí, nên không thể trò chuyện bằng model này.\n\n` +
-      `**Bạn có thể:**\n` +
-      `• Bật billing cho Key tại https://aistudio.google.com, hoặc\n` +
-      `• Dùng menu "Chọn Model Gemini" phía trên để đổi sang **Gemini 3.6 Flash** hoặc **Gemini 3.5 Flash-Lite** (miễn phí, không cần billing).`;
+      `💳 **Chức năng này yêu cầu API Key đã bật thanh toán (Billing)!**\n` +
+      `Key hiện tại chưa gắn thẻ thanh toán hoặc đã hết hạn mức sử dụng (Quota: 0).\n\n` +
+      `**Cách khắc phục:**\n` +
+      `• Truy cập https://aistudio.google.com để liên kết thẻ thanh toán (Visa/Mastercard) cho Google Cloud Project.\n` +
+      `• Tạo lại API Key mới sau khi đã bật Billing.`;
   } else if (s.includes('401') || /API key not valid|api key invalid/i.test(rawMsg)) {
     hint = '👉 API Key sai hoặc không hợp lệ. Hãy tạo lại Key tại https://aistudio.google.com';
   } else if (s.includes('403') || /permission|forbidden/i.test(rawMsg)) {
     hint = '👉 Key không có quyền dùng model này, hoặc chưa bật Gemini API cho project.';
   } else if (s.includes('404') || /not found|does not exist/i.test(rawMsg)) {
-    hint = '👉 Model không tồn tại hoặc Key không có quyền truy cập model này. Hãy đổi Model bằng menu Ticket.';
-  } else if (isQuota) {
-    hint = '👉 Đã vượt hạn mức (quota) hoặc gửi quá nhanh. Hãy đợi rồi thử lại, hoặc kiểm tra billing trên Google AI Studio.';
+    hint = '👉 Model không tồn tại hoặc Key không có quyền truy cập model này.';
   } else if (s.includes('400') || /invalid argument/i.test(rawMsg)) {
     hint = '👉 Yêu cầu gửi lên không hợp lệ (có thể do tham số model không còn hỗ trợ).';
   } else if (/timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(rawMsg)) {
@@ -510,7 +513,6 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // 🔒 TỰ ĐỘNG KHÓA KÊNH CHAT TẠM THỜI
   let isChannelLocked = false;
   if (!isDM && message.guild) {
     try {
@@ -631,7 +633,6 @@ client.on('messageCreate', async (message) => {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
     await message.reply('❌ Đã có lỗi xảy ra khi xử lý yêu cầu của bạn. Hãy thử lại hoặc dùng `/reset`.').catch(() => {});
   } finally {
-    // 🔓 ĐẢM BẢO MỞ LẠI KÊNH CHAT DÙ THÀNH CÔNG HAY CÓ LỖI
     if (isChannelLocked && !isDM && message.guild) {
       try {
         await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
