@@ -15,6 +15,7 @@ const {
   PermissionFlagsBits,
   ChannelType,
   AttachmentBuilder,
+  EmbedBuilder,
 } = require('discord.js');
 
 const { GoogleGenAI } = require('@google/genai');
@@ -608,20 +609,21 @@ client.on('messageCreate', async (message) => {
     }
 
     const DISCORD_MAX = 2000;
+    const gifEmbed = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
+
     if (replyText.length > DISCORD_MAX) {
       const safeChunkSize = 1900;
       const chunks = replyText.match(new RegExp(`([\\s\\S]{1,${safeChunkSize}})`, 'g')) || [];
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
-        if (i === chunks.length - 1 && gifUrl) {
-          await message.reply(`${chunk}\n\n${gifUrl}`).catch(() => {});
-        } else {
-          await message.reply(chunk).catch(() => {});
-        }
+        const isLast = i === chunks.length - 1;
+        await message.reply({ content: chunk, embeds: isLast ? gifEmbed : [] }).catch(() => {});
       }
     } else {
-      if (gifUrl) await message.reply(`${replyText}\n\n${gifUrl}`).catch(() => {});
-      else await message.reply(replyText).catch(() => {});
+      await message.reply({ content: replyText, embeds: gifEmbed }).catch(async () => {
+        // Nếu embed lỗi (vd link chết đột xuất), vẫn gửi text để không mất câu trả lời
+        await message.reply(replyText).catch(() => {});
+      });
     }
   } catch (error) {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
