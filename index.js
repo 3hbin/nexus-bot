@@ -83,6 +83,7 @@ const SYSTEM_INSTRUCTION =
   'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. ' +
   'Trả lời ngắn gọn, rõ ràng.';
 
+// Model mặc định. Model ID hợp lệ hiện tại (GA): gemini-3.6-flash, gemini-3.5-flash-lite
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 
 // ==========================================
@@ -114,6 +115,35 @@ function detectEmotion(text) {
   if (/\b(maybe|hmm|hmm...|đang suy nghĩ|suy nghĩ|có thể|let me think|i think)\b/.test(t)) return 'thinking';
   if (/\b(haha|lol|😂|vui|tuyệt|tuyệt vời|tôi rất vui|thích|yay|hooray|excited|great)\b/.test(t)) return 'happy';
   return null;
+}
+
+// Rút gọn lỗi API thành 1 dòng dễ đọc, kèm gợi ý nguyên nhân phổ biến
+function formatApiError(apiErr) {
+  const status =
+    apiErr?.status || apiErr?.code || apiErr?.response?.status || apiErr?.error?.code || 'N/A';
+  const rawMsg =
+    apiErr?.message ||
+    apiErr?.error?.message ||
+    apiErr?.response?.data?.error?.message ||
+    'Không có thông tin chi tiết.';
+
+  let hint = '';
+  const s = String(status);
+  if (s.includes('401') || /API key not valid|api key invalid/i.test(rawMsg)) {
+    hint = '👉 API Key sai hoặc không hợp lệ. Hãy tạo lại Key tại https://aistudio.google.com';
+  } else if (s.includes('403') || /permission|forbidden/i.test(rawMsg)) {
+    hint = '👉 Key không có quyền dùng model này, hoặc chưa bật Gemini API cho project.';
+  } else if (s.includes('404') || /not found|does not exist/i.test(rawMsg)) {
+    hint = '👉 Model không tồn tại hoặc Key không có quyền truy cập model này. Hãy đổi Model bằng menu Ticket.';
+  } else if (s.includes('429') || /quota|rate limit/i.test(rawMsg)) {
+    hint = '👉 Đã vượt hạn mức (quota) hoặc gửi quá nhanh. Hãy đợi rồi thử lại, hoặc kiểm tra billing trên Google AI Studio.';
+  } else if (s.includes('400') || /invalid argument/i.test(rawMsg)) {
+    hint = '👉 Yêu cầu gửi lên không hợp lệ (có thể do tham số model không còn hỗ trợ).';
+  } else if (/timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(rawMsg)) {
+    hint = '👉 Lỗi mạng/timeout khi gọi Gemini API. Hãy thử lại.';
+  }
+
+  return { status, rawMsg, hint };
 }
 
 // ==========================================
@@ -376,7 +406,8 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
         console.error('❌ Lỗi tạo ảnh:', err);
-        return interaction.editReply(`❌ Không thể tạo ảnh: ${err.message || 'Lỗi không xác định.'}`);
+        const { status, rawMsg } = formatApiError(err);
+        return interaction.editReply(`❌ Không thể tạo ảnh. [\`${status}\`] ${rawMsg}`);
       }
     }
 
@@ -407,7 +438,8 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({ content: `🎬 Video tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
         console.error('❌ Lỗi tạo video:', err);
-        await interaction.editReply(`❌ Không thể tạo video: ${err.message || 'Lỗi không xác định.'}`);
+        const { status, rawMsg } = formatApiError(err);
+        await interaction.editReply(`❌ Không thể tạo video. [\`${status}\`] ${rawMsg}`);
       } finally {
         if (videoPath) cleanupTempFile(videoPath);
       }
@@ -472,6 +504,7 @@ client.on('messageCreate', async (message) => {
   try {
     let activeAi = aiInstance;
     let selectedModel = DEFAULT_MODEL;
+    let usingTicketKey = false;
 
     if (ticketData) {
       if (!ticketData.userApiKey) {
@@ -481,13 +514,15 @@ client.on('messageCreate', async (message) => {
       }
       activeAi = new GoogleGenAI({ apiKey: ticketData.userApiKey });
       selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
+      usingTicketKey = true;
     }
 
     if (!activeAi) {
       return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
     }
 
-    const sessionKey = `${message.author.id}_${message.channel.id}`;
+    // sessionKey gồm cả model để tránh session cũ "kẹt" model khác sau khi đổi qua menu Ticket
+    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}`;
     if (!userSessions.has(sessionKey)) {
       const chatSession = activeAi.chats.create({
         model: selectedModel,
@@ -495,6 +530,8 @@ client.on('messageCreate', async (message) => {
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
           maxOutputTokens: 1024,
+          // Gemini 3.x không còn hỗ trợ temperature/top_p/top_k tuỳ chỉnh — không set để tránh lỗi 400.
+          thinkingConfig: { thinkingLevel: 'medium' },
         },
       });
       userSessions.set(sessionKey, chatSession);
@@ -506,7 +543,20 @@ client.on('messageCreate', async (message) => {
       result = await chat.sendMessage({ message: prompt });
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
-      return message.reply('❌ Lỗi liên lạc Gemini API. Hãy kiểm tra lại API Key hoặc đổi Model AI bằng menu Ticket.');
+      userSessions.delete(sessionKey); // xoá session lỗi để lần sau tạo lại sạch
+
+      const { status, rawMsg, hint } = formatApiError(apiErr);
+      const keySource = usingTicketKey ? 'Key riêng của Ticket này' : 'Key mặc định của Bot';
+
+      const detailMsg =
+        `❌ **Lỗi liên lạc Gemini API**\n` +
+        `> Model: \`${selectedModel}\`\n` +
+        `> Nguồn Key: ${keySource}\n` +
+        `> Mã lỗi: \`${status}\`\n` +
+        `> Chi tiết: ${rawMsg}\n` +
+        (hint ? `\n${hint}` : '');
+
+      return message.reply(detailMsg.slice(0, 1900));
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
