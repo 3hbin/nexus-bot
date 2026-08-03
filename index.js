@@ -87,6 +87,11 @@ const SYSTEM_INSTRUCTION =
 // Model mặc định. Model ID hợp lệ hiện tại (GA): gemini-3.6-flash, gemini-3.5-flash-lite
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 
+// Tên model ảnh/video dùng trong MediaGen.js — giữ đồng bộ thủ công với IMAGE_MODEL/VIDEO_MODEL
+// bên trong MediaGen.js, dùng để nhận diện lỗi "cần billing" và báo thông báo thân thiện.
+const IMAGE_MODEL_NAME = 'gemini-2.5-flash-image';
+const VIDEO_MODEL_NAME = 'veo-3.1-generate-preview';
+
 // ==========================================
 // DISCORD CLIENT
 // ==========================================
@@ -119,7 +124,8 @@ function detectEmotion(text) {
 }
 
 // Model nào bắt buộc phải có billing mới dùng được (không có gói miễn phí)
-const PAID_ONLY_MODELS = new Set(['gemini-3.1-pro-preview']);
+const PAID_ONLY_MODELS = new Set(['gemini-3.1-pro-preview', 'gemini-3.1-flash-image', 'veo-3.1-generate-preview']);
+// Lưu ý: gemini-2.5-flash-image (model ảnh mặc định hiện tại) vẫn còn free tier tính đến thời điểm cập nhật code này.
 
 // Rút gọn lỗi API thành 1 dòng dễ đọc, kèm gợi ý nguyên nhân phổ biến
 // friendlyOnly: nếu true, với các case đã nhận diện rõ sẽ trả về 1 thông báo thân thiện gọn,
@@ -422,8 +428,8 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
         console.error('❌ Lỗi tạo ảnh:', err);
-        const { status, rawMsg } = formatApiError(err);
-        return interaction.editReply(`❌ Không thể tạo ảnh. [\`${status}\`] ${rawMsg}`);
+        const { status, rawMsg, friendly } = formatApiError(err, IMAGE_MODEL_NAME);
+        return interaction.editReply(friendly || `❌ Không thể tạo ảnh. [\`${status}\`] ${rawMsg}`);
       }
     }
 
@@ -454,8 +460,8 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({ content: `🎬 Video tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
       } catch (err) {
         console.error('❌ Lỗi tạo video:', err);
-        const { status, rawMsg } = formatApiError(err);
-        await interaction.editReply(`❌ Không thể tạo video. [\`${status}\`] ${rawMsg}`);
+        const { status, rawMsg, friendly } = formatApiError(err, VIDEO_MODEL_NAME);
+        await interaction.editReply(friendly || `❌ Không thể tạo video. [\`${status}\`] ${rawMsg}`);
       } finally {
         if (videoPath) cleanupTempFile(videoPath);
       }
