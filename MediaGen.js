@@ -14,9 +14,10 @@ const DEFAULT_IMAGE_COOLDOWN_MS = 1000 * 15; // 15s
 const DEFAULT_VIDEO_COOLDOWN_MS = 1000 * 60 * 3; // 3 minutes
 
 // Model IDs — cập nhật tại đây nếu Google đổi tên model trong tương lai
-// Imagen (imagen-4.0-generate-001) đã ngừng cấp cho user mới kể từ giữa 2026.
-// Model ảnh khuyến nghị hiện tại là dòng Gemini Image ("Nano Banana").
-const IMAGE_MODEL = 'gemini-3.1-flash-image';
+// Lưu ý quan trọng: dòng ảnh Gemini 3.1 (gemini-3.1-flash-image) KHÔNG có free tier — bắt buộc billing.
+// gemini-2.5-flash-image vẫn còn free tier tính tới thời điểm cập nhật code này, nên dùng làm mặc định
+// để bot hoạt động được ngay cả với Key không có billing.
+const IMAGE_MODEL = 'gemini-2.5-flash-image';
 const VIDEO_MODEL = 'veo-3.1-generate-preview';
 
 const VIDEO_POLL_INTERVAL_MS = 10000; // 10s giữa mỗi lần poll
