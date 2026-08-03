@@ -93,6 +93,7 @@ async function setTicketApiKey(channelId, apiKey) {
   try {
     const key = String(channelId);
     const existing = tickets.get(key) || { channelId: key, userApiKey: null, selectedModel: null };
+    // Do not log the API key for security
     existing.userApiKey = apiKey;
     tickets.set(key, existing);
     await saveTickets();
@@ -260,16 +261,26 @@ async function handleTicketInteraction(interaction) {
     // 3. XỬ LÝ NÚT "NHẬP KEY" -> hiện modal
     if (interaction.isButton() && interaction.customId === 'input_api_key') {
       try {
-        const modal = new ModalBuilder().setCustomId('modal_api_key').setTitle('Nhập Gemini API Key (aistudio.google.com)');
+        const modal = new ModalBuilder().setCustomId('modal_api_key').setTitle('Nhập Gemini API Key — Lấy tại aistudio.google.com');
         const input = new TextInputBuilder()
           .setCustomId('text_api_key')
           .setLabel('GEMINI API KEY (Ví dụ: AIzaSy... / AQ...)')
           .setStyle(TextInputStyle.Short)
-          .setPlaceholder('Ví dụ: AIzaSy... hoặc AQ...')
+          .setPlaceholder('Ví dụ: AIzaSy... hoặc AQ... — Truy cập https://aistudio.google.com để tạo Key')
           .setRequired(true);
         const row = new ActionRowBuilder().addComponents(input);
         modal.addComponents(row);
+
         await interaction.showModal(modal);
+
+        // Additionally try to DM the user a clickable link with short guidance (best-effort)
+        try {
+          await interaction.user.send(
+            'Hướng dẫn nhanh: Để lấy Gemini API Key, truy cập https://aistudio.google.com → Project của bạn → Credentials → Tạo API Key. Sau đó quay lại kênh Ticket và dán vào modal.'
+          ).catch(() => {});
+        } catch (e) {
+          // ignore DM errors
+        }
       } catch (e) {
         console.error('TicketManager: show modal error', e);
         try { await interaction.reply({ content: '❌ Không thể mở modal.', ephemeral: true }); } catch (e) {}
