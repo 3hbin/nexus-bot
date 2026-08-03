@@ -84,11 +84,8 @@ const SYSTEM_INSTRUCTION =
   'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. ' +
   'Trả lời ngắn gọn, rõ ràng.';
 
-// Model mặc định. Model ID hợp lệ hiện tại (GA): gemini-3.6-flash, gemini-3.5-flash-lite
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 
-// Tên model ảnh/video dùng trong MediaGen.js — giữ đồng bộ thủ công với IMAGE_MODEL/VIDEO_MODEL
-// bên trong MediaGen.js, dùng để nhận diện lỗi "cần billing" và báo thông báo thân thiện.
 const IMAGE_MODEL_NAME = 'gemini-2.5-flash-image';
 const VIDEO_MODEL_NAME = 'veo-3.1-generate-preview';
 
@@ -123,13 +120,8 @@ function detectEmotion(text) {
   return null;
 }
 
-// Model nào bắt buộc phải có billing mới dùng được (không có gói miễn phí)
 const PAID_ONLY_MODELS = new Set(['gemini-3.1-pro-preview', 'gemini-3.1-flash-image', 'veo-3.1-generate-preview']);
-// Lưu ý: gemini-2.5-flash-image (model ảnh mặc định hiện tại) vẫn còn free tier tính đến thời điểm cập nhật code này.
 
-// Rút gọn lỗi API thành 1 dòng dễ đọc, kèm gợi ý nguyên nhân phổ biến
-// friendlyOnly: nếu true, với các case đã nhận diện rõ sẽ trả về 1 thông báo thân thiện gọn,
-// không kèm status/rawMsg kỹ thuật (dùng cho case chat thường, tránh làm user rối).
 function formatApiError(apiErr, modelId = null) {
   const status =
     apiErr?.status || apiErr?.code || apiErr?.response?.status || apiErr?.error?.code || 'N/A';
@@ -140,7 +132,7 @@ function formatApiError(apiErr, modelId = null) {
     'Không có thông tin chi tiết.';
 
   let hint = '';
-  let friendly = null; // thông báo thân thiện, ưu tiên hiển thị nếu có
+  let friendly = null;
   const s = String(status);
   const isQuota = s.includes('429') || /quota|rate limit/i.test(rawMsg);
 
@@ -298,7 +290,6 @@ client.once('ready', async () => {
 // ==========================================
 client.on('interactionCreate', async (interaction) => {
   try {
-    // First, allow TicketManager to handle modal submits, buttons and select menus
     if (interaction.isModalSubmit && interaction.customId && interaction.customId.startsWith('modal_api_key')) {
       const handledModal = await handleTicketInteraction(interaction);
       if (handledModal) return;
@@ -404,7 +395,6 @@ client.on('interactionCreate', async (interaction) => {
       return handleSetupTicketCommand(interaction);
     }
 
-    // 🎨 LỆNH TẠO ẢNH (/imagine)
     if (commandName === 'imagine') {
       if (!aiInstance) {
         return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
@@ -433,7 +423,6 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // 🎬 LỆNH TẠO VIDEO (/video)
     if (commandName === 'video') {
       if (!aiInstance) {
         return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
@@ -521,9 +510,22 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  try { await message.channel.sendTyping(); } catch (err) {}
+  // 🔒 TỰ ĐỘNG KHÓA KÊNH CHAT TẠM THỜI
+  let isChannelLocked = false;
+  if (!isDM && message.guild) {
+    try {
+      await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
+        SendMessages: false,
+      });
+      isChannelLocked = true;
+    } catch (lockErr) {
+      console.error('❌ Không thể khóa kênh (Cần quyền Manage Channels hoặc Manage Roles):', lockErr);
+    }
+  }
 
   try {
+    try { await message.channel.sendTyping(); } catch (err) {}
+
     let activeAi = aiInstance;
     let selectedModel = DEFAULT_MODEL;
     let usingTicketKey = false;
@@ -543,7 +545,6 @@ client.on('messageCreate', async (message) => {
       return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
     }
 
-    // sessionKey gồm cả model để tránh session cũ "kẹt" model khác sau khi đổi qua menu Ticket
     const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}`;
     if (!userSessions.has(sessionKey)) {
       const chatSession = activeAi.chats.create({
@@ -552,7 +553,6 @@ client.on('messageCreate', async (message) => {
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
           maxOutputTokens: 1024,
-          // Gemini 3.x không còn hỗ trợ temperature/top_p/top_k tuỳ chỉnh — không set để tránh lỗi 400.
           thinkingConfig: { thinkingLevel: 'medium' },
         },
       });
@@ -565,12 +565,11 @@ client.on('messageCreate', async (message) => {
       result = await chat.sendMessage({ message: prompt });
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
-      userSessions.delete(sessionKey); // xoá session lỗi để lần sau tạo lại sạch
+      userSessions.delete(sessionKey);
 
       const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
       const keySource = usingTicketKey ? 'Key riêng của Ticket này' : 'Key mặc định của Bot';
 
-      // Nếu đã nhận diện được case rõ ràng (vd: model cần billing), ưu tiên hiện thông báo thân thiện, ngắn gọn.
       const detailMsg = friendly
         ? friendly
         : `❌ **Lỗi liên lạc Gemini API**\n` +
@@ -585,7 +584,6 @@ client.on('messageCreate', async (message) => {
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
 
-    // Heuristic: extract 1-2 English keywords to search GIFs
     function extractKeywordsEnglish(text) {
       if (!text) return null;
       const words = text
@@ -608,7 +606,6 @@ client.on('messageCreate', async (message) => {
       gifUrl = null;
     }
 
-    // fallback to emotion-based gif
     if (!gifUrl) {
       const emotion = detectEmotion(replyText);
       if (emotion) gifUrl = await getGifForEmotion(emotion);
@@ -627,13 +624,23 @@ client.on('messageCreate', async (message) => {
       }
     } else {
       await message.reply({ content: replyText, embeds: gifEmbed }).catch(async () => {
-        // Nếu embed lỗi (vd link chết đột xuất), vẫn gửi text để không mất câu trả lời
         await message.reply(replyText).catch(() => {});
       });
     }
   } catch (error) {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
     await message.reply('❌ Đã có lỗi xảy ra khi xử lý yêu cầu của bạn. Hãy thử lại hoặc dùng `/reset`.').catch(() => {});
+  } finally {
+    // 🔓 ĐẢM BẢO MỞ LẠI KÊNH CHAT DÙ THÀNH CÔNG HAY CÓ LỖI
+    if (isChannelLocked && !isDM && message.guild) {
+      try {
+        await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
+          SendMessages: null,
+        });
+      } catch (unlockErr) {
+        console.error('❌ Không thể mở lại kênh chat:', unlockErr);
+      }
+    }
   }
 });
 
@@ -642,16 +649,13 @@ client.on('messageCreate', async (message) => {
 // ==========================================
 (async () => {
   try {
-    // 1. Tạo sẵn thư mục data
     const dataDir = path.join(__dirname, 'data');
     await fs.mkdir(dataDir, { recursive: true }).catch(() => {});
 
-    // 2. Load các file cấu hình một cách an toàn
     await loadAllowedChannelsFromFile().catch((e) => console.error('Lỗi load allowedChannels:', e));
     await loadAutoClearChannels().catch((e) => console.error('Lỗi load autoClear:', e));
     await loadTickets().catch((e) => console.error('Lỗi load tickets:', e));
 
-    // 3. Đăng nhập Discord nếu có token
     if (DISCORD_TOKEN) {
       await client.login(DISCORD_TOKEN);
       console.log('🔐 Đã gọi client.login() thành công!');
@@ -663,7 +667,6 @@ client.on('messageCreate', async (message) => {
   }
 })();
 
-// BẮT LỖI TOÀN CỤC CHỐNG SẬP BOT TRÊN RENDER
 process.on('uncaughtException', (err) => {
   console.error('❌ Phát hiện lỗi Uncaught Exception:', err);
 });
