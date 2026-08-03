@@ -203,7 +203,7 @@ async function handleTicketInteraction(interaction) {
         return true;
       }
 
-      // Lưu thông tin ticket
+      // Lưu thông tin ticket (model mặc định khớp với DEFAULT_MODEL trong index.js)
       tickets.set(String(created.id), {
         channelId: String(created.id),
         userApiKey: null,
@@ -211,15 +211,13 @@ async function handleTicketInteraction(interaction) {
       });
       await saveTickets();
 
-      // Tạo Menu chọn Model AI (chỉ danh sách model hiện tại, loại bỏ model cũ)
+      // Tạo Menu chọn Model AI (chỉ danh sách model GA/hợp lệ hiện tại)
       const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('select_model')
         .setPlaceholder('Chọn Model Gemini để trò chuyện...')
         .addOptions(
-          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.6 Flash (Mặc định)').setDescription('Tốc độ & Mới nhất').setValue('gemini-3.6-flash'),
-          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.5 Flash').setDescription('Hiệu suất cao').setValue('gemini-3.5-flash'),
-          new StringSelectMenuOptionBuilder().setLabel('Gemini 2.5 Flash').setDescription('Phiên bản ổn định nhẹ').setValue('gemini-2.5-flash'),
-          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.1 Pro').setDescription('Tư duy & Lập trình').setValue('gemini-3.1-pro')
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.6 Flash (Mặc định)').setDescription('Tốc độ & Mới nhất, tối ưu agentic').setValue('gemini-3.6-flash'),
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.5 Flash-Lite').setDescription('Rẻ nhất, nhanh nhất').setValue('gemini-3.5-flash-lite')
         );
 
       const row1 = new ActionRowBuilder().addComponents(selectMenu);
@@ -236,8 +234,9 @@ async function handleTicketInteraction(interaction) {
           '• Bạn có thể đổi Model bằng menu phía dưới.\n\n' +
           '**Hướng dẫn lấy Gemini API Key**:\n' +
           '1) Truy cập: https://aistudio.google.com\n' +
-          '2) Chọn Project của bạn → Credentials → Create API key\n' +
-          '3) Quay lại kênh này, nhấn **🔑 Nhập Key Gemini** và dán API Key vào modal, hoặc gửi `key: <API_KEY>`.'
+          '2) Chọn Project của bạn → Get API key → Create API key\n' +
+          '3) Quay lại kênh này, nhấn **🔑 Nhập Key Gemini** và dán API Key vào modal, hoặc gửi `key: <API_KEY>`.\n\n' +
+          '⚠️ Nếu vẫn báo lỗi liên lạc API sau khi nhập Key, hãy kiểm tra: Key còn hiệu lực, đã bật billing/Gemini API trên project đó, và chưa vượt hạn mức (quota).'
         )
         .setColor(0x57f287);
 
@@ -274,7 +273,7 @@ async function handleTicketInteraction(interaction) {
           .setCustomId('text_api_key')
           .setLabel('Dán Gemini API Key vào đây')
           .setStyle(TextInputStyle.Short)
-          .setPlaceholder('AIzaSy... hoặc AQ...')
+          .setPlaceholder('AIzaSy...')
           .setRequired(true);
         const row = new ActionRowBuilder().addComponents(input);
         modal.addComponents(row);
@@ -284,7 +283,7 @@ async function handleTicketInteraction(interaction) {
         // Additionally try to DM the user a clickable link with short guidance (best-effort)
         try {
           await interaction.user.send(
-            'Hướng dẫn nhanh: Để lấy Gemini API Key, truy cập https://aistudio.google.com → Project của bạn → Credentials → Tạo API Key. Sau đó quay lại kênh Ticket và dán vào modal.'
+            'Hướng dẫn nhanh: Để lấy Gemini API Key, truy cập https://aistudio.google.com → Get API key → Create API key. Sau đó quay lại kênh Ticket và dán vào modal.'
           ).catch(() => {});
         } catch (e) {
           // ignore DM errors
@@ -300,7 +299,7 @@ async function handleTicketInteraction(interaction) {
     if (interaction.isModalSubmit() && interaction.customId === 'modal_api_key') {
       try {
         const channelId = interaction.channelId || (interaction.channel && interaction.channel.id);
-        const apiKey = interaction.fields?.getTextInputValue('text_api_key') || null;
+        const apiKey = interaction.fields?.getTextInputValue('text_api_key')?.trim() || null;
         if (!channelId) {
           await interaction.reply({ content: '❌ Không xác định được kênh để lưu Key.', ephemeral: true });
           return true;
@@ -310,8 +309,16 @@ async function handleTicketInteraction(interaction) {
           return true;
         }
         const ok = await setTicketApiKey(channelId, apiKey);
-        if (ok) await interaction.reply({ content: '🔑 Đã lưu API Key cho kênh này (ẩn).', ephemeral: true });
-        else await interaction.reply({ content: '❌ Không thể lưu API Key. Hãy thử lại sau.', ephemeral: true });
+        if (ok) {
+          await interaction.reply({
+            content:
+              '🔑 Đã lưu API Key cho kênh này (ẩn).\n' +
+              'Bạn có thể chat ngay bây giờ. Nếu vẫn gặp lỗi liên lạc API, hãy kiểm tra Key còn hiệu lực và đã bật Gemini API cho project trên https://aistudio.google.com',
+            ephemeral: true,
+          });
+        } else {
+          await interaction.reply({ content: '❌ Không thể lưu API Key. Hãy thử lại sau.', ephemeral: true });
+        }
       } catch (e) {
         console.error('TicketManager: modal submit handler error', e);
         try { await interaction.reply({ content: '❌ Lỗi khi lưu API Key.', ephemeral: true }); } catch (e) {}
