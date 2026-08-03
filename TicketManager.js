@@ -217,7 +217,8 @@ async function handleTicketInteraction(interaction) {
         .setPlaceholder('Chọn Model Gemini để trò chuyện...')
         .addOptions(
           new StringSelectMenuOptionBuilder().setLabel('Gemini 3.6 Flash (Mặc định)').setDescription('Tốc độ & Mới nhất, tối ưu agentic').setValue('gemini-3.6-flash'),
-          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.5 Flash-Lite').setDescription('Rẻ nhất, nhanh nhất').setValue('gemini-3.5-flash-lite')
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.5 Flash-Lite').setDescription('Rẻ nhất, nhanh nhất').setValue('gemini-3.5-flash-lite'),
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.1 Pro Preview').setDescription('Suy luận sâu, lập trình (cần Key có billing)').setValue('gemini-3.1-pro-preview')
         );
 
       const row1 = new ActionRowBuilder().addComponents(selectMenu);
@@ -236,7 +237,8 @@ async function handleTicketInteraction(interaction) {
           '1) Truy cập: https://aistudio.google.com\n' +
           '2) Chọn Project của bạn → Get API key → Create API key\n' +
           '3) Quay lại kênh này, nhấn **🔑 Nhập Key Gemini** và dán API Key vào modal, hoặc gửi `key: <API_KEY>`.\n\n' +
-          '⚠️ Nếu vẫn báo lỗi liên lạc API sau khi nhập Key, hãy kiểm tra: Key còn hiệu lực, đã bật billing/Gemini API trên project đó, và chưa vượt hạn mức (quota).'
+          '⚠️ Nếu vẫn báo lỗi liên lạc API sau khi nhập Key, hãy kiểm tra: Key còn hiệu lực, đã bật billing/Gemini API trên project đó, và chưa vượt hạn mức (quota).\n' +
+          '⚠️ Riêng **Gemini 3.1 Pro Preview** bắt buộc Key phải có billing (không có gói miễn phí), nếu không sẽ luôn báo lỗi liên lạc API.'
         )
         .setColor(0x57f287);
 
