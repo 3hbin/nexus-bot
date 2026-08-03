@@ -1,10 +1,5 @@
 // MediaGen.js
 // Wrapper cho tạo ảnh / video bằng AI (safety: bọc try/catch), và cooldown cho media
-// Dùng đúng API thật của SDK @google/genai (đã cập nhật theo docs mới nhất):
-//   - Ảnh: Imagen (generateImages) đã ngừng cấp cho user mới -> chuyển sang Nano Banana
-//     qua ai.models.generateContent({ model: 'gemini-3.1-flash-image', contents, config: { responseModalities } })
-//   - Video: ai.models.generateVideos({ model: 'veo-...', prompt }) -> operation, phải poll cho tới khi done
-//     Lưu ý: Veo 3.x chỉ chấp nhận personGeneration = 'allow_adult' (giá trị 'dont_allow' đã bị loại bỏ).
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -13,10 +8,7 @@ const imageCooldowns = new Map(); // key: userId:type -> timestamp
 const DEFAULT_IMAGE_COOLDOWN_MS = 1000 * 15; // 15s
 const DEFAULT_VIDEO_COOLDOWN_MS = 1000 * 60 * 3; // 3 minutes
 
-// Model IDs — cập nhật tại đây nếu Google đổi tên model trong tương lai
-// Lưu ý quan trọng: dòng ảnh Gemini 3.1 (gemini-3.1-flash-image) KHÔNG có free tier — bắt buộc billing.
-// gemini-2.5-flash-image vẫn còn free tier tính tới thời điểm cập nhật code này, nên dùng làm mặc định
-// để bot hoạt động được ngay cả với Key không có billing.
+// Model IDs
 const IMAGE_MODEL = 'gemini-2.5-flash-image';
 const VIDEO_MODEL = 'veo-3.1-generate-preview';
 
@@ -71,8 +63,6 @@ async function generateImage(aiInstance, prompt) {
     const imagePart = parts.find((p) => p.inlineData?.data);
 
     if (!imagePart) {
-      // Không có ảnh trong response — có thể bị bộ lọc an toàn nội dung chặn,
-      // hoặc model chỉ trả về text giải thích lý do từ chối.
       const textPart = parts.find((p) => p.text)?.text;
       const finishReason = response?.candidates?.[0]?.finishReason;
       if (finishReason && finishReason !== 'STOP') {
@@ -92,7 +82,6 @@ async function generateImage(aiInstance, prompt) {
 
 /**
  * Tạo video bằng Veo qua SDK @google/genai.
- * Video generation là thao tác bất đồng bộ (operation) -> phải poll tới khi operation.done = true.
  * Trả về đường dẫn file .mp4 tạm trên đĩa.
  */
 async function generateVideo(aiInstance, prompt, opts = {}) {
@@ -106,12 +95,11 @@ async function generateVideo(aiInstance, prompt, opts = {}) {
       throw new Error('SDK hiện tại không hỗ trợ operations.getVideosOperation để theo dõi tiến trình video.');
     }
 
+    // Đã loại bỏ personGeneration gây lỗi 400
     let operation = await aiInstance.models.generateVideos({
       model: VIDEO_MODEL,
       prompt,
       config: {
-        // Veo 3.x chỉ chấp nhận 'allow_adult' (giá trị 'dont_allow' đã bị Google loại bỏ, gây lỗi 400 INVALID_ARGUMENT).
-        personGeneration: 'allow_adult',
         aspectRatio: '16:9',
       },
     });
@@ -142,13 +130,11 @@ async function generateVideo(aiInstance, prompt, opts = {}) {
 
     const outPath = path.join(MEDIA_TMP_DIR, `nexus_video_${Date.now()}.mp4`);
 
-    // SDK hỗ trợ tải file trực tiếp qua files.download khi video có uri nội bộ.
     if (aiInstance.files && typeof aiInstance.files.download === 'function') {
       await aiInstance.files.download({ file: generatedVideo.video, downloadPath: outPath });
       return outPath;
     }
 
-    // Fallback: video.uri là URL có thể fetch trực tiếp (cần kèm API key nếu là Gemini Developer API)
     if (generatedVideo.video.uri) {
       const apiKey = aiInstance?.apiKey || process.env.GEMINI_API_KEY;
       const url = apiKey ? `${generatedVideo.video.uri}&key=${apiKey}` : generatedVideo.video.uri;
@@ -173,7 +159,6 @@ async function cleanupTempFile(p) {
   }
 }
 
-// helper: fetch url -> buffer (dùng global fetch, có sẵn từ Node.js 18+)
 async function fetchToBuffer(url) {
   try {
     if (typeof fetch === 'undefined') {
