@@ -1,8 +1,10 @@
 // MediaGen.js
 // Wrapper cho tạo ảnh / video bằng AI (safety: bọc try/catch), và cooldown cho media
-// Dùng đúng API thật của SDK @google/genai:
-//   - Ảnh: ai.models.generateImages({ model: 'imagen-...', prompt, config })
+// Dùng đúng API thật của SDK @google/genai (đã cập nhật theo docs mới nhất):
+//   - Ảnh: Imagen (generateImages) đã ngừng cấp cho user mới -> chuyển sang Nano Banana
+//     qua ai.models.generateContent({ model: 'gemini-3.1-flash-image', contents, config: { responseModalities } })
 //   - Video: ai.models.generateVideos({ model: 'veo-...', prompt }) -> operation, phải poll cho tới khi done
+//     Lưu ý: Veo 3.x chỉ chấp nhận personGeneration = 'allow_adult' (giá trị 'dont_allow' đã bị loại bỏ).
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -12,7 +14,9 @@ const DEFAULT_IMAGE_COOLDOWN_MS = 1000 * 15; // 15s
 const DEFAULT_VIDEO_COOLDOWN_MS = 1000 * 60 * 3; // 3 minutes
 
 // Model IDs — cập nhật tại đây nếu Google đổi tên model trong tương lai
-const IMAGE_MODEL = 'imagen-4.0-generate-001';
+// Imagen (imagen-4.0-generate-001) đã ngừng cấp cho user mới kể từ giữa 2026.
+// Model ảnh khuyến nghị hiện tại là dòng Gemini Image ("Nano Banana").
+const IMAGE_MODEL = 'gemini-3.1-flash-image';
 const VIDEO_MODEL = 'veo-3.1-generate-preview';
 
 const VIDEO_POLL_INTERVAL_MS = 10000; // 10s giữa mỗi lần poll
@@ -44,38 +48,41 @@ function checkMediaCooldown(userId, type = 'image') {
 }
 
 /**
- * Tạo ảnh bằng Imagen qua SDK @google/genai.
+ * Tạo ảnh bằng Gemini Image ("Nano Banana") qua SDK @google/genai.
  * Trả về { buffer, mimeType }.
  */
 async function generateImage(aiInstance, prompt) {
   try {
     if (!aiInstance) throw new Error('AI instance không được cung cấp.');
-    if (!aiInstance.models || typeof aiInstance.models.generateImages !== 'function') {
-      throw new Error('SDK hiện tại không hỗ trợ generateImages (kiểm tra lại phiên bản @google/genai).');
+    if (!aiInstance.models || typeof aiInstance.models.generateContent !== 'function') {
+      throw new Error('SDK hiện tại không hỗ trợ generateContent (kiểm tra lại phiên bản @google/genai).');
     }
 
-    const response = await aiInstance.models.generateImages({
+    const response = await aiInstance.models.generateContent({
       model: IMAGE_MODEL,
-      prompt,
+      contents: prompt,
       config: {
-        numberOfImages: 1,
+        responseModalities: ['TEXT', 'IMAGE'],
       },
     });
 
-    const generated = response?.generatedImages?.[0];
-    const imageBytes = generated?.image?.imageBytes;
+    const parts = response?.candidates?.[0]?.content?.parts || [];
+    const imagePart = parts.find((p) => p.inlineData?.data);
 
-    if (!imageBytes) {
-      // Có thể bị chặn bởi bộ lọc an toàn nội dung (RAI)
-      const raiReason = response?.generatedImages?.[0]?.raiFilteredReason || response?.raiFilteredReason;
-      if (raiReason) {
-        throw new Error(`Ảnh bị từ chối bởi bộ lọc an toàn nội dung: ${raiReason}`);
+    if (!imagePart) {
+      // Không có ảnh trong response — có thể bị bộ lọc an toàn nội dung chặn,
+      // hoặc model chỉ trả về text giải thích lý do từ chối.
+      const textPart = parts.find((p) => p.text)?.text;
+      const finishReason = response?.candidates?.[0]?.finishReason;
+      if (finishReason && finishReason !== 'STOP') {
+        throw new Error(`Ảnh bị chặn bởi bộ lọc an toàn nội dung (finishReason: ${finishReason}).`);
       }
-      throw new Error('AI không trả về dữ liệu ảnh hợp lệ.');
+      throw new Error(textPart ? `AI từ chối tạo ảnh: ${textPart.slice(0, 200)}` : 'AI không trả về dữ liệu ảnh hợp lệ.');
     }
 
-    const buffer = Buffer.from(imageBytes, 'base64');
-    return { buffer, mimeType: 'image/png' };
+    const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
+    const mimeType = imagePart.inlineData.mimeType || 'image/png';
+    return { buffer, mimeType };
   } catch (err) {
     console.error('MediaGen: generateImage error:', err);
     throw err;
@@ -102,7 +109,8 @@ async function generateVideo(aiInstance, prompt, opts = {}) {
       model: VIDEO_MODEL,
       prompt,
       config: {
-        personGeneration: 'dont_allow',
+        // Veo 3.x chỉ chấp nhận 'allow_adult' (giá trị 'dont_allow' đã bị Google loại bỏ, gây lỗi 400 INVALID_ARGUMENT).
+        personGeneration: 'allow_adult',
         aspectRatio: '16:9',
       },
     });
