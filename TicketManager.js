@@ -1,5 +1,5 @@
 // TicketManager.js
-// Quản lý Ticket channels: lưu tickets, tạo kênh ticket đúng danh mục, xử lý chọn model & đóng ticket.
+// Quản lý Ticket channels: lưu tickets, tạo kênh ticket đúng danh mục, xử lý chọn model, modal API key & đóng ticket.
 const fs = require('fs').promises;
 const path = require('path');
 const {
@@ -10,6 +10,9 @@ const {
   ChannelType,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require('discord.js');
 
 const TICKETS_FILE = path.join(__dirname, 'data', 'tickets.json');
@@ -109,17 +112,13 @@ async function handleSetupTicketCommand(interaction) {
       .setTitle('🎫 Ticket Chat AI')
       .setDescription(
         'Nhấn nút **Tạo Ticket** bên dưới để mở kênh trò chuyện AI riêng biệt.\n' +
-        '• Trong kênh ticket, bạn có thể chọn Model Gemini mong muốn.\n' +
-        '• Nếu server yêu cầu Key riêng, hãy nhắn `key: <GEMINI_API_KEY_CỦA_BẠN>` vào kênh đó.'
+          '• Trong kênh ticket, bạn có thể chọn Model Gemini mong muốn.\n' +
+          '• Nếu server yêu cầu Key riêng, hãy nhắn `key: <GEMINI_API_KEY_CỦA_BẠN>` vào kênh đó hoặc dùng nút nhập Key.'
       )
       .setColor(0x5865f2);
 
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(customId)
-        .setLabel('Tạo Ticket')
-        .setStyle(ButtonStyle.Primary)
-        .setEmoji('🎫')
+      new ButtonBuilder().setCustomId(customId).setLabel('Tạo Ticket').setStyle(ButtonStyle.Primary).setEmoji('🎫')
     );
 
     const target = interaction.channel;
@@ -155,11 +154,7 @@ async function handleTicketInteraction(interaction) {
 
       // Ưu tiên 2: Tìm category có tên chứa "CHAT ROOM AI" trong server (không phân biệt hoa/thường)
       if (!parentId) {
-        const aiCategory = guild.channels.cache.find(
-          (c) =>
-            c.type === ChannelType.GuildCategory &&
-            c.name.toLowerCase().includes('chat room ai')
-        );
+        const aiCategory = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name && c.name.toLowerCase().includes('chat room ai'));
         if (aiCategory) {
           parentId = aiCategory.id;
         }
@@ -215,48 +210,32 @@ async function handleTicketInteraction(interaction) {
       });
       await saveTickets();
 
-      // Tạo Menu chọn Model AI
+      // Tạo Menu chọn Model AI (chỉ danh sách model hiện tại, loại bỏ model cũ)
       const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('select_model')
         .setPlaceholder('Chọn Model Gemini để trò chuyện...')
         .addOptions(
-          new StringSelectMenuOptionBuilder()
-            .setLabel('Gemini 3.6 Flash (Mặc định)')
-            .setDescription('Tốc độ & Mới nhất 2026')
-            .setValue('gemini-3.6-flash')
-            .setDefault(true),
-          new StringSelectMenuOptionBuilder()
-            .setLabel('Gemini 3.5 Flash')
-            .setDescription('Hiệu suất cao & Đa phương thức')
-            .setValue('gemini-3.5-flash'),
-          new StringSelectMenuOptionBuilder()
-            .setLabel('Gemini 3.1 Pro')
-            .setDescription('Tư duy cao cấp & Lập trình chuyên sâu')
-            .setValue('gemini-3.1-pro')
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.6 Flash (Mặc định)').setDescription('Tốc độ & Mới nhất').setValue('gemini-3.6-flash'),
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.5 Flash').setDescription('Hiệu suất cao').setValue('gemini-3.5-flash'),
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 2.5 Flash').setDescription('Phiên bản ổn định nhẹ').setValue('gemini-2.5-flash'),
+          new StringSelectMenuOptionBuilder().setLabel('Gemini 3.1 Pro').setDescription('Tư duy & Lập trình').setValue('gemini-3.1-pro')
         );
 
       const row1 = new ActionRowBuilder().addComponents(selectMenu);
       const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('close_ticket')
-          .setLabel('Đóng Ticket')
-          .setStyle(ButtonStyle.Danger)
-          .setEmoji('🔒')
+        new ButtonBuilder().setCustomId('input_api_key').setLabel('🔑 Nhập Key Gemini').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('close_ticket').setLabel('Đóng Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
       );
 
       // Gửi giao diện điều khiển vào kênh Ticket mới tạo
       await created.send({
         content: `👋 Xin chào ${member}! Kênh trò chuyện riêng của bạn đã sẵn sàng.\n\n` +
                  `• **Model hiện tại**: \`gemini-3.6-flash\`\n` +
-                 `• Bạn có thể đổi Model bên dưới hoặc nhập API Key bằng cú pháp \`key: <API_KEY>\`.`,
+                 `• Bạn có thể đổi Model bên dưới hoặc nhập API Key bằng nút "🔑 Nhập Key Gemini" hoặc dán \`key: <API_KEY>\`.`,
         components: [row1, row2],
       }).catch(() => {});
 
-      await interaction.reply({
-        content: `✅ Đã tạo kênh Ticket thành công tại: <#${created.id}>`,
-        ephemeral: true,
-      }).catch(() => {});
-
+      await interaction.reply({ content: `✅ Đã tạo kênh Ticket thành công tại: <#${created.id}>`, ephemeral: true }).catch(() => {});
       return true;
     }
 
@@ -274,25 +253,71 @@ async function handleTicketInteraction(interaction) {
       tickets.set(String(interaction.channelId), ticketInfo);
       await saveTickets();
 
-      await interaction.reply({
-        content: `🤖 Đã chuyển Model AI sang **\`${selectedModel}\`** cho kênh này!`,
-      });
+      await interaction.reply({ content: `🤖 Đã chuyển Model AI sang **\`${selectedModel}\`** cho kênh này!`, ephemeral: true });
       return true;
     }
 
-    // 3. XỬ LÝ NÚT "ĐÓNG TICKET"
-    if (interaction.isButton() && interaction.customId === 'close_ticket') {
-      await interaction.reply('🔒 Kênh này sẽ tự động xóa sau 3 giây...');
-      tickets.delete(String(interaction.channelId));
-      await saveTickets();
+    // 3. XỬ LÝ NÚT "NHẬP KEY" -> hiện modal
+    if (interaction.isButton() && interaction.customId === 'input_api_key') {
+      try {
+        const modal = new ModalBuilder().setCustomId('modal_api_key').setTitle('Nhập Gemini API Key');
+        const input = new TextInputBuilder()
+          .setCustomId('text_api_key')
+          .setLabel('Dán GEMINI API KEY của bạn vào đây')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('sk-...')
+          .setRequired(true);
+        const row = new ActionRowBuilder().addComponents(input);
+        modal.addComponents(row);
+        await interaction.showModal(modal);
+      } catch (e) {
+        console.error('TicketManager: show modal error', e);
+        try { await interaction.reply({ content: '❌ Không thể mở modal.', ephemeral: true }); } catch (e) {}
+      }
+      return true;
+    }
 
-      setTimeout(async () => {
-        try {
-          await interaction.channel.delete();
-        } catch (err) {
-          console.error('TicketManager: Lỗi khi xóa kênh ticket:', err);
+    // 4. XỬ LÝ MODAL SUBMIT
+    if (interaction.isModalSubmit() && interaction.customId === 'modal_api_key') {
+      try {
+        const channelId = interaction.channelId || (interaction.channel && interaction.channel.id);
+        const apiKey = interaction.fields?.getTextInputValue('text_api_key') || null;
+        if (!channelId) {
+          await interaction.reply({ content: '❌ Không xác định được kênh để lưu Key.', ephemeral: true });
+          return true;
         }
-      }, 3000);
+        if (!apiKey || apiKey.length < 10) {
+          await interaction.reply({ content: '❌ Key không hợp lệ.', ephemeral: true });
+          return true;
+        }
+        const ok = await setTicketApiKey(channelId, apiKey);
+        if (ok) await interaction.reply({ content: '🔑 Đã lưu API Key cho kênh này (ẩn).', ephemeral: true });
+        else await interaction.reply({ content: '❌ Không thể lưu API Key. Hãy thử lại sau.', ephemeral: true });
+      } catch (e) {
+        console.error('TicketManager: modal submit handler error', e);
+        try { await interaction.reply({ content: '❌ Lỗi khi lưu API Key.', ephemeral: true }); } catch (e) {}
+      }
+      return true;
+    }
+
+    // 5. XỬ LÝ NÚT "ĐÓNG TICKET"
+    if (interaction.isButton() && interaction.customId === 'close_ticket') {
+      try {
+        await interaction.reply({ content: '🔒 Kênh này sẽ được xóa và dữ liệu liên quan sẽ bị xoá hoàn toàn trong 3s...', ephemeral: true });
+        // remove ticket data immediately
+        tickets.delete(String(interaction.channelId));
+        await saveTickets();
+        setTimeout(async () => {
+          try {
+            await interaction.channel.delete();
+          } catch (err) {
+            console.error('TicketManager: Lỗi khi xóa kênh ticket:', err);
+          }
+        }, 3000);
+      } catch (e) {
+        console.error('TicketManager: error closing ticket', e);
+        try { await interaction.reply({ content: '❌ Không thể đóng kênh.', ephemeral: true }); } catch (e) {}
+      }
       return true;
     }
 
