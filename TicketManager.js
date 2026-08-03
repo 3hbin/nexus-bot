@@ -260,12 +260,12 @@ async function handleTicketInteraction(interaction) {
     // 3. XỬ LÝ NÚT "NHẬP KEY" -> hiện modal
     if (interaction.isButton() && interaction.customId === 'input_api_key') {
       try {
-        const modal = new ModalBuilder().setCustomId('modal_api_key').setTitle('Nhập Gemini API Key');
+        const modal = new ModalBuilder().setCustomId('modal_api_key').setTitle('Nhập Gemini API Key (aistudio.google.com)');
         const input = new TextInputBuilder()
           .setCustomId('text_api_key')
-          .setLabel('Dán GEMINI API KEY của bạn vào đây')
+          .setLabel('GEMINI API KEY (Ví dụ: AIzaSy... / AQ...)')
           .setStyle(TextInputStyle.Short)
-          .setPlaceholder('sk-...')
+          .setPlaceholder('Ví dụ: AIzaSy... hoặc AQ...')
           .setRequired(true);
         const row = new ActionRowBuilder().addComponents(input);
         modal.addComponents(row);
