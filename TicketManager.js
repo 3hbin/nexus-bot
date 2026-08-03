@@ -228,13 +228,21 @@ async function handleTicketInteraction(interaction) {
         new ButtonBuilder().setCustomId('close_ticket').setLabel('Đóng Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
       );
 
-      // Gửi giao diện điều khiển vào kênh Ticket mới tạo
-      await created.send({
-        content: `👋 Xin chào ${member}! Kênh trò chuyện riêng của bạn đã sẵn sàng.\n\n` +
-                 `• **Model hiện tại**: \`gemini-3.6-flash\`\n` +
-                 `• Bạn có thể đổi Model bên dưới hoặc nhập API Key bằng nút "🔑 Nhập Key Gemini" hoặc dán \`key: <API_KEY>\`.`,
-        components: [row1, row2],
-      }).catch(() => {});
+      // Build welcome embed with detailed guidance for obtaining API key
+      const welcomeEmbed = new EmbedBuilder()
+        .setTitle('👋 Xin chào! Đây là kênh Ticket của bạn')
+        .setDescription(
+          '• **Model mặc định**: `gemini-3.6-flash`\n' +
+          '• Bạn có thể đổi Model bằng menu phía dưới.\n\n' +
+          '**Hướng dẫn lấy Gemini API Key**:\n' +
+          '1) Truy cập: https://aistudio.google.com\n' +
+          '2) Chọn Project của bạn → Credentials → Create API key\n' +
+          '3) Quay lại kênh này, nhấn **🔑 Nhập Key Gemini** và dán API Key vào modal, hoặc gửi `key: <API_KEY>`.'
+        )
+        .setColor(0x57f287);
+
+      // Gửi giao diện điều khiển & embed vào kênh Ticket mới tạo
+      await created.send({ embeds: [welcomeEmbed], components: [row1, row2] }).catch(() => {});
 
       await interaction.reply({ content: `✅ Đã tạo kênh Ticket thành công tại: <#${created.id}>`, ephemeral: true }).catch(() => {});
       return true;
@@ -261,12 +269,12 @@ async function handleTicketInteraction(interaction) {
     // 3. XỬ LÝ NÚT "NHẬP KEY" -> hiện modal
     if (interaction.isButton() && interaction.customId === 'input_api_key') {
       try {
-        const modal = new ModalBuilder().setCustomId('modal_api_key').setTitle('Nhập Gemini API Key — Lấy tại aistudio.google.com');
+        const modal = new ModalBuilder().setCustomId('modal_api_key').setTitle('Nhập Gemini API Key');
         const input = new TextInputBuilder()
           .setCustomId('text_api_key')
-          .setLabel('GEMINI API KEY (Ví dụ: AIzaSy... / AQ...)')
+          .setLabel('Dán Gemini API Key vào đây')
           .setStyle(TextInputStyle.Short)
-          .setPlaceholder('Ví dụ: AIzaSy... hoặc AQ... — Truy cập https://aistudio.google.com để tạo Key')
+          .setPlaceholder('AIzaSy... hoặc AQ...')
           .setRequired(true);
         const row = new ActionRowBuilder().addComponents(input);
         modal.addComponents(row);
