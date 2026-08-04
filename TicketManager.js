@@ -548,6 +548,28 @@ async function handleTicketInteraction(interaction) {
   }
 }
 
+async function setTicketNote(channelId, noteText) {
+  try {
+    const key = String(channelId);
+    const existing = tickets.get(key) || {
+      channelId: key,
+      userApiKey: null,
+      selectedModel: null,
+      selectedPersona: DEFAULT_PERSONA_ID,
+      customPersonaText: null,
+      contextNote: null,
+    };
+    const t = (noteText || '').trim();
+    existing.contextNote = t ? t.slice(0, 1500) : null;
+    tickets.set(key, existing);
+    await saveTickets();
+    return true;
+  } catch (err) {
+    console.error('TicketManager: setTicketNote error', err);
+    return false;
+  }
+}
+
 module.exports = {
   loadTickets,
   syncTicketsOnStartup,
@@ -556,4 +578,5 @@ module.exports = {
   getTicketByChannel,
   setTicketApiKey,
   setTicketPersona,
+  setTicketNote,
 };
