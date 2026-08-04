@@ -16,6 +16,9 @@ const {
   ChannelType,
   AttachmentBuilder,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
 
 const { GoogleGenAI } = require('@google/genai');
@@ -35,6 +38,7 @@ const {
   handleTicketInteraction,
   getTicketByChannel,
   setTicketApiKey,
+  setTicketNote,
 } = require('./TicketManager.js');
 const {
   generateImage,
@@ -80,10 +84,23 @@ const {
   getUserPrefs,
   setUserPersona,
   setUserTts,
+  setUserReplyMode,
   personaDisplayName,
+  getStrictModeBlock,
 } = require('./UserPrefs.js');
 const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
 const { PERSONA_PRESETS } = require('./Interest.js');
+const { setAdminLogClient, adminLog } = require('./AdminLog.js');
+const { startQuiz, tryAnswer, hasActiveQuiz } = require('./Quiz.js');
+const {
+  isVoiceAvailable,
+  joinVoiceChannel,
+  leaveVoice,
+  speakInGuild,
+} = require('./VoiceManager.js');
+
+/** Lưu prompt gần nhất để nút Regenerate — key: userId_channelId */
+const lastPrompts = new Map();
 
 // ==========================================
 // CONFIG & INIT
@@ -140,6 +157,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: ['CHANNEL'],
 });
@@ -342,6 +360,36 @@ const commands = [
     .addStringOption((opt) =>
       opt.setName('text').setDescription('Nội dung cần đọc').setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName('mode')
+    .setDescription('Chế độ trả lời: normal (mặc định) hoặc strict (ngắn, ít emoji)')
+    .addStringOption((opt) =>
+      opt
+        .setName('type')
+        .setDescription('Chọn mode')
+        .setRequired(true)
+        .addChoices({ name: 'Normal', value: 'normal' }, { name: 'Strict', value: 'strict' })
+    ),
+  new SlashCommandBuilder()
+    .setName('quiz')
+    .setDescription('Mini-game đố vui (ticket hoặc kênh AI)'),
+  new SlashCommandBuilder()
+    .setName('voice')
+    .setDescription('Bot join/leave voice hoặc đọc text trong voice')
+    .addStringOption((opt) =>
+      opt
+        .setName('action')
+        .setDescription('join | leave | speak')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Join kênh voice của bạn', value: 'join' },
+          { name: 'Leave voice', value: 'leave' },
+          { name: 'Speak (đọc text)', value: 'speak' }
+        )
+    )
+    .addStringOption((opt) =>
+      opt.setName('text').setDescription('Nội dung khi action=speak').setRequired(false)
+    ),
 ].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN || 'none');
@@ -358,7 +406,13 @@ client.once('ready', async () => {
 
   startAutoClearScheduler(client);
   startSessionCleanupScheduler();
+  setAdminLogClient(client);
   await syncTicketsOnStartup(client).catch((e) => console.error('Lỗi syncTickets:', e));
+  await adminLog({
+    title: '🟢 Nexus AI online',
+    description: `Logged in as **${client.user.tag}**`,
+    color: 0x57f287,
+  });
 });
 
 // ==========================================
@@ -366,13 +420,120 @@ client.once('ready', async () => {
 // ==========================================
 client.on('interactionCreate', async (interaction) => {
   try {
+    // Nút Regenerate
+    if (interaction.isButton() && interaction.customId.startsWith('nexus_regen:')) {
+      const key = interaction.customId.slice('nexus_regen:'.length);
+      const stored = lastPrompts.get(key);
+      if (!stored || stored.userId !== interaction.user.id) {
+        return interaction.reply({
+          content: '❌ Không tìm thấy prompt để tạo lại (hết hạn hoặc không phải của bạn).',
+          ephemeral: true,
+        });
+      }
+      await interaction.deferReply();
+      // Giả lập tin nhắn: xử lý qua cùng pipeline bằng cách gửi lại nội dung
+      try {
+        const fakeContent = stored.prompt;
+        // Gọi lại logic ngắn: dùng Gemini với session hiện tại
+        const ticketData = getTicketByChannel(interaction.channelId);
+        let activeAi = aiInstance;
+        let selectedModel = DEFAULT_MODEL;
+        let selectedPersona = DEFAULT_PERSONA_ID;
+        let customPersonaText = null;
+        const up = getUserPrefs(interaction.user.id);
+        selectedPersona = up.selectedPersona || DEFAULT_PERSONA_ID;
+        customPersonaText = up.customPersonaText || null;
+        if (ticketData?.userApiKey) {
+          activeAi = new GoogleGenAI({ apiKey: ticketData.userApiKey });
+          selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
+          selectedPersona = ticketData.selectedPersona || selectedPersona;
+          customPersonaText = ticketData.customPersonaText || customPersonaText;
+        }
+        if (!activeAi) {
+          return interaction.editReply('❌ Chưa có GEMINI_API_KEY.');
+        }
+        const lock = getGeminiLockStatus();
+        if (lock.locked) return interaction.editReply(lock.message);
+        const q = checkQuota(interaction.user.id, 'chat');
+        if (!q.allowed) return interaction.editReply(q.message);
+
+        let systemInstruction = getSystemInstructionForPersona(
+          SYSTEM_INSTRUCTION,
+          selectedPersona,
+          customPersonaText
+        );
+        if (up.replyMode === 'strict') {
+          systemInstruction += '\n\n' + getStrictModeBlock();
+        }
+        if (ticketData?.contextNote) {
+          systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket]\n${ticketData.contextNote}`;
+        }
+
+        const personaKeyPart =
+          selectedPersona === 'custom'
+            ? `custom_${(customPersonaText || '').slice(0, 40).replace(/\s+/g, '_')}`
+            : selectedPersona;
+        const sessionKey = `${interaction.user.id}_${interaction.channelId}_${selectedModel}_${personaKeyPart}`;
+        if (!userSessions.has(sessionKey)) {
+          const restoredHistory = getSavedHistory(sessionKey);
+          const chatSession = activeAi.chats.create({
+            model: selectedModel,
+            history: restoredHistory,
+            config: {
+              systemInstruction,
+              maxOutputTokens: 1024,
+              thinkingConfig: { thinkingLevel: 'medium' },
+            },
+          });
+          userSessions.set(sessionKey, chatSession);
+        }
+        const chat = userSessions.get(sessionKey);
+        const result = await chat.sendMessage({
+          message: `[Người dùng yêu cầu TRẢ LỜI LẠI với cách diễn đạt khác, cùng ý]\n\n${fakeContent}`,
+        });
+        consumeQuota(interaction.user.id, 'chat');
+        clearGeminiLock().catch(() => {});
+        const replyText = result?.text || 'Không tạo lại được.';
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`nexus_regen:${key}`)
+            .setLabel('Trả lời lại')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('🔄')
+        );
+        return interaction.editReply({ content: replyText.slice(0, 2000), components: [row] });
+      } catch (e) {
+        console.error('regen error', e);
+        const qi = parseGeminiQuotaError(e, DEFAULT_MODEL);
+        if (qi.isQuota) {
+          await lockGeminiQuota({
+            retryAfterSec: qi.retryAfterSec,
+            isDailyQuota: qi.isDailyQuota,
+            model: qi.model || DEFAULT_MODEL,
+          });
+          return interaction.editReply(getGeminiLockStatus().message);
+        }
+        return interaction.editReply('❌ Lỗi khi tạo lại câu trả lời.');
+      }
+    }
+
     if (interaction.isModalSubmit && interaction.customId && interaction.customId.startsWith('modal_api_key')) {
       const handledModal = await handleTicketInteraction(interaction);
       if (handledModal) return;
     }
 
     const handledByTicket = await handleTicketInteraction(interaction);
-    if (handledByTicket) return;
+    if (handledByTicket) {
+      // Log tạo ticket / đóng — best effort qua customId
+      if (interaction.isButton?.() && interaction.customId?.startsWith('open_ticket')) {
+        adminLog({
+          title: '🎫 Ticket tạo',
+          description: `User: ${interaction.user.tag} (\`${interaction.user.id}\`)`,
+          color: 0x57f287,
+        }).catch(() => {});
+      }
+      return;
+    }
 
     if (!interaction.isChatInputCommand()) return;
 
@@ -630,6 +791,63 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply('❌ Lỗi khi tạo TTS.');
       }
     }
+
+    if (commandName === 'mode') {
+      const type = interaction.options.getString('type');
+      setUserReplyMode(user.id, type);
+      for (const key of userSessions.keys()) {
+        if (key.startsWith(user.id)) userSessions.delete(key);
+      }
+      return interaction.reply({
+        content:
+          type === 'strict'
+            ? '📎 Đã bật **strict**: trả lời ngắn, ít emoji, đúng trọng tâm.'
+            : '💬 Đã về **normal**: trả lời thân thiện như mặc định.',
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'quiz') {
+      const question = startQuiz(channelId, user.id);
+      return interaction.reply({
+        content: `🧩 **Câu đố** (2 phút):\n> ${question}\n\nTrả lời bằng tin nhắn thường trong kênh này!`,
+      });
+    }
+
+    if (commandName === 'voice') {
+      const action = interaction.options.getString('action');
+      if (action === 'join') {
+        const member = interaction.member;
+        const ch = member?.voice?.channel;
+        if (!ch) {
+          return interaction.reply({
+            content: '❌ Vào một kênh **voice** trước, rồi chạy `/voice action:join`.',
+            ephemeral: true,
+          });
+        }
+        const r = await joinVoiceChannel(ch);
+        return interaction.reply({ content: r.message, ephemeral: !r.ok });
+      }
+      if (action === 'leave') {
+        if (!guildId) {
+          return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
+        }
+        const r = leaveVoice(guildId);
+        return interaction.reply({ content: r.message, ephemeral: true });
+      }
+      if (action === 'speak') {
+        const text = interaction.options.getString('text');
+        if (!text || !text.trim()) {
+          return interaction.reply({ content: '❌ Cần điền `text` khi speak.', ephemeral: true });
+        }
+        if (!guildId) {
+          return interaction.reply({ content: '❌ Speak voice chỉ trong server.', ephemeral: true });
+        }
+        await interaction.deferReply({ ephemeral: true });
+        const r = await speakInGuild(guildId, text.trim());
+        return interaction.editReply(r.message);
+      }
+    }
   } catch (err) {
     console.error('❌ Lỗi khi xử lý interaction:', err);
     if (interaction.replied || interaction.deferred) {
@@ -656,6 +874,24 @@ client.on('messageCreate', async (message) => {
     setTicketApiKey(message.channel.id, apiKey);
     await message.delete().catch(() => {});
     return message.channel.send('🔑 **Đã lưu Key Gemini thành công!** (Tin nhắn chứa Key đã được tự động xóa).');
+  }
+
+  // Ghim ngữ cảnh ticket: note: ...
+  if (ticketData && /^note\s*:/i.test(message.content.trim())) {
+    const noteText = message.content.replace(/^note\s*:/i, '').trim();
+    if (!noteText) {
+      return message.reply('ℹ️ Dùng: `note: nội dung cần nhớ trong ticket này`');
+    }
+    await setTicketNote(message.channel.id, noteText);
+    return message.reply(`📌 Đã ghim ngữ cảnh ticket:\n> ${noteText.slice(0, 500)}${noteText.length > 500 ? '…' : ''}`);
+  }
+
+  // Trả lời quiz nếu đang có câu đố trong kênh
+  if (hasActiveQuiz(message.channel.id)) {
+    const quizResult = tryAnswer(message.channel.id, message.author.id, message.content);
+    if (quizResult && quizResult.message) {
+      return message.reply(quizResult.message).catch(() => {});
+    }
   }
 
   const isDM = !message.guild;
@@ -700,6 +936,15 @@ client.on('messageCreate', async (message) => {
   // Toxic shield — chặn lời lẽ xúc phạm trước khi gọi API
   const toxicReply = handleToxicBehavior(prompt);
   if (toxicReply) {
+    adminLog({
+      title: '⚠️ Toxic blocked',
+      description: prompt.slice(0, 300),
+      color: 0xed4245,
+      fields: [
+        { name: 'User', value: `${message.author.tag} (\`${message.author.id}\`)`, inline: true },
+        { name: 'Channel', value: `<#${message.channel.id}>`, inline: true },
+      ],
+    }).catch(() => {});
     return message.reply(toxicReply).catch(() => {});
   }
 
@@ -777,11 +1022,17 @@ client.on('messageCreate', async (message) => {
       // Khôi phục lịch sử đã lưu trên đĩa (nếu có) thay vì luôn bắt đầu trống,
       // để bộ nhớ hội thoại sống sót qua các lần restart/redeploy.
       const restoredHistory = getSavedHistory(sessionKey);
-      const systemInstruction = getSystemInstructionForPersona(
+      let systemInstruction = getSystemInstructionForPersona(
         SYSTEM_INSTRUCTION,
         selectedPersona,
         customPersonaText
       );
+      if (userPrefs.replyMode === 'strict') {
+        systemInstruction += '\n\n' + getStrictModeBlock();
+      }
+      if (ticketData?.contextNote) {
+        systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
+      }
       const chatSession = activeAi.chats.create({
         model: selectedModel,
         history: restoredHistory,
@@ -900,6 +1151,17 @@ client.on('messageCreate', async (message) => {
     const gifEmbed = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
     const files = ttsAttachment ? [ttsAttachment] : [];
 
+    // Lưu prompt + nút Regenerate
+    const regenKey = `${message.author.id}_${message.channel.id}`;
+    lastPrompts.set(regenKey, { prompt, userId: message.author.id, at: Date.now() });
+    const regenRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`nexus_regen:${regenKey}`)
+        .setLabel('Trả lời lại')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔄')
+    );
+
     let textOut = replyText;
     if (quotaWarn) textOut = `${replyText}\n\n${quotaWarn}`;
 
@@ -914,13 +1176,16 @@ client.on('messageCreate', async (message) => {
             content: chunk,
             embeds: isLast ? gifEmbed : [],
             files: isLast ? files : [],
+            components: isLast ? [regenRow] : [],
           })
           .catch(() => {});
       }
     } else {
-      await message.reply({ content: textOut, embeds: gifEmbed, files }).catch(async () => {
-        await message.reply(textOut).catch(() => {});
-      });
+      await message
+        .reply({ content: textOut, embeds: gifEmbed, files, components: [regenRow] })
+        .catch(async () => {
+          await message.reply(textOut).catch(() => {});
+        });
     }
   } catch (error) {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
