@@ -51,6 +51,34 @@ const {
   clearSessionsByPrefix,
   flushSessionsNow,
 } = require('./SessionManager.js');
+const {
+  getSystemInstructionForPersona,
+  handleToxicBehavior,
+  DEFAULT_PERSONA_ID,
+} = require('./Interest.js');
+const {
+  detectUserEmotion,
+  detectEmotion,
+  appendEmotionToInstruction,
+  tryQuickEmotionalReply,
+  resolveEmotionalGif,
+} = require('./Emotion.js');
+const {
+  loadQuota,
+  checkQuota,
+  consumeQuota,
+  maybeWarn,
+  getQuotaStatusText,
+} = require('./QuotaManager.js');
+const {
+  loadUserPrefs,
+  getUserPrefs,
+  setUserPersona,
+  setUserTts,
+  personaDisplayName,
+} = require('./UserPrefs.js');
+const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
+const { PERSONA_PRESETS } = require('./Interest.js');
 
 // ==========================================
 // CONFIG & INIT
@@ -112,22 +140,10 @@ const client = new Client({
 });
 
 // ==========================================
-// BỘ NHỚ & CẤU HÌNH GIF
+// BỘ NHỚ
 // ==========================================
 const userSessions = new Map();
 const allowedChannels = new Map();
-
-function detectEmotion(text) {
-  if (!text) return null;
-  const t = text.toLowerCase();
-
-  if (/\b(hello|hi|hey|chào|xin chào|chào bạn|chào mọi người)\b/.test(t)) return 'hello';
-  if (/\b(thanks|thank you|cảm ơn|cảm ơn bạn|thank)\b/.test(t)) return 'thanks';
-  if (/\b(sorry|xin lỗi|rất tiếc|xin lỗi bạn)\b/.test(t)) return 'sorry';
-  if (/\b(maybe|hmm|hmm...|đang suy nghĩ|suy nghĩ|có thể|let me think|i think)\b/.test(t)) return 'thinking';
-  if (/\b(haha|lol|😂|vui|tuyệt|tuyệt vời|tôi rất vui|thích|yay|hooray|excited|great)\b/.test(t)) return 'happy';
-  return null;
-}
 
 const PAID_ONLY_MODELS = new Set([
   'gemini-3.1-pro-preview',
@@ -280,6 +296,47 @@ const commands = [
     .addStringOption((opt) =>
       opt.setName('prompt').setDescription('Mô tả video bạn muốn tạo').setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName('persona')
+    .setDescription('Đổi tính cách / sở thích AI (áp dụng ngoài ticket; trong ticket dùng menu)')
+    .addStringOption((opt) =>
+      opt
+        .setName('style')
+        .setDescription('Chọn persona')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Nexus mặc định', value: 'default' },
+          { name: 'Tính trẻ trâu Việt', value: 'tre_trau' },
+          { name: 'Tính nói nhẹ nhàng', value: 'nhe_nhang' },
+          { name: 'Thích chơi Roblox', value: 'roblox' },
+          { name: 'Tùy chỉnh (kèm mô tả)', value: 'custom' }
+        )
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName('custom')
+        .setDescription('Mô tả tính cách khi chọn Tùy chỉnh')
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('quota')
+    .setDescription('Xem hạn mức API (chat / ảnh / video) còn lại hôm nay'),
+  new SlashCommandBuilder()
+    .setName('tts')
+    .setDescription('Bật/tắt đọc to câu trả lời bằng giọng nói (file MP3)')
+    .addStringOption((opt) =>
+      opt
+        .setName('mode')
+        .setDescription('on = bật, off = tắt')
+        .setRequired(true)
+        .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })
+    ),
+  new SlashCommandBuilder()
+    .setName('speak')
+    .setDescription('Đọc một đoạn text thành file giọng nói (MP3)')
+    .addStringOption((opt) =>
+      opt.setName('text').setDescription('Nội dung cần đọc').setRequired(true)
+    ),
 ].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN || 'none');
@@ -355,16 +412,32 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'status') {
       const activeSessions = userSessions.size;
+      const up = getUserPrefs(user.id);
+      const personaLine = personaDisplayName(up.selectedPersona || 'default', up.customPersonaText);
+      const ttsLine = up.ttsEnabled ? 'Bật' : 'Tắt';
       if (!guildId) {
         return interaction.reply({
-          content: `📡 Nexus AI Status (DM):\n- Active sessions: **${activeSessions}**\n- Default Model: **${DEFAULT_MODEL}**`,
+          content:
+            `📡 Nexus AI Status (DM):\n` +
+            `- Active sessions: **${activeSessions}**\n` +
+            `- Default Model: **${DEFAULT_MODEL}**\n` +
+            `- Persona của bạn: **${personaLine}**\n` +
+            `- TTS: **${ttsLine}**\n` +
+            getQuotaStatusText(user.id),
           ephemeral: true,
         });
       } else {
         const tgt = allowedChannels.get(guildId);
         const channelInfo = tgt ? `<#${tgt}> (\`${tgt}\`)` : 'Chưa thiết lập (bot phản hồi khi được mention hoặc trong DM)';
         return interaction.reply({
-          content: `📡 Nexus AI Status (Server):\n- Kênh hiện tại: ${channelInfo}\n- Active sessions tổng: **${activeSessions}**\n- Default Model: **${DEFAULT_MODEL}**`,
+          content:
+            `📡 Nexus AI Status (Server):\n` +
+            `- Kênh hiện tại: ${channelInfo}\n` +
+            `- Active sessions tổng: **${activeSessions}**\n` +
+            `- Default Model: **${DEFAULT_MODEL}**\n` +
+            `- Persona của bạn: **${personaLine}**\n` +
+            `- TTS: **${ttsLine}**\n` +
+            getQuotaStatusText(user.id),
           ephemeral: true,
         });
       }
@@ -416,6 +489,11 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
       }
 
+      const q = checkQuota(user.id, 'image');
+      if (!q.allowed) {
+        return interaction.reply({ content: q.message, ephemeral: true });
+      }
+
       const cooldown = checkMediaCooldown(user.id, 'image');
       if (!cooldown.allowed) {
         return interaction.reply({
@@ -429,9 +507,14 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         const { buffer, mimeType } = await generateImage(aiInstance, promptStr);
+        consumeQuota(user.id, 'image');
         const ext = mimeType.includes('png') ? 'png' : 'jpg';
         const attachment = new AttachmentBuilder(buffer, { name: `nexus_image.${ext}` });
-        return interaction.editReply({ content: `🎨 Ảnh tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
+        const warn = maybeWarn(user.id, 'image');
+        return interaction.editReply({
+          content: `🎨 Ảnh tạo theo yêu cầu: "${promptStr}"${warn ? `\n${warn}` : ''}`,
+          files: [attachment],
+        });
       } catch (err) {
         console.error('❌ Lỗi tạo ảnh:', err);
         const { status, rawMsg, friendly } = formatApiError(err, IMAGE_MODEL_NAME);
@@ -442,6 +525,11 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'video') {
       if (!aiInstance) {
         return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
+      }
+
+      const q = checkQuota(user.id, 'video');
+      if (!q.allowed) {
+        return interaction.reply({ content: q.message, ephemeral: true });
       }
 
       const cooldown = checkMediaCooldown(user.id, 'video');
@@ -461,14 +549,80 @@ client.on('interactionCreate', async (interaction) => {
         videoPath = await generateVideo(aiInstance, promptStr, {
           onProgress: (s) => console.log(`⏳ Đang tạo video cho ${user.tag}... [${s}s]`),
         });
+        consumeQuota(user.id, 'video');
         const attachment = new AttachmentBuilder(videoPath, { name: 'nexus_video.mp4' });
-        await interaction.editReply({ content: `🎬 Video tạo theo yêu cầu: "${promptStr}"`, files: [attachment] });
+        const warn = maybeWarn(user.id, 'video');
+        await interaction.editReply({
+          content: `🎬 Video tạo theo yêu cầu: "${promptStr}"${warn ? `\n${warn}` : ''}`,
+          files: [attachment],
+        });
       } catch (err) {
         console.error('❌ Lỗi tạo video:', err);
         const { status, rawMsg, friendly } = formatApiError(err, VIDEO_MODEL_NAME);
         await interaction.editReply(friendly || `❌ Không thể tạo video. [\`${status}\`] ${rawMsg}`);
       } finally {
         if (videoPath) cleanupTempFile(videoPath);
+      }
+    }
+
+    if (commandName === 'persona') {
+      const style = interaction.options.getString('style');
+      const custom = interaction.options.getString('custom');
+      if (style === 'custom' && (!custom || custom.trim().length < 5)) {
+        return interaction.reply({
+          content:
+            '❌ Khi chọn **Tùy chỉnh**, hãy điền thêm option `custom` (mô tả ≥ 5 ký tự).\n' +
+            'VD: `/persona style:Tùy chỉnh custom:Nói kiểu Gen Z, thích anime, trả lời ngắn`',
+          ephemeral: true,
+        });
+      }
+      if (style !== 'custom' && !PERSONA_PRESETS[style]) {
+        return interaction.reply({ content: '❌ Persona không hợp lệ.', ephemeral: true });
+      }
+      setUserPersona(user.id, style, style === 'custom' ? custom.trim() : null);
+      // Xóa session RAM để tin nhắn sau dùng persona mới
+      for (const key of userSessions.keys()) {
+        if (key.startsWith(user.id)) userSessions.delete(key);
+      }
+      const label = personaDisplayName(style, style === 'custom' ? custom : null);
+      return interaction.reply({
+        content:
+          `🎭 Đã đặt persona (ngoài ticket) thành **${label}**.\n` +
+          `• Trong **ticket** vẫn dùng menu chọn riêng của kênh ticket.\n` +
+          `• Session chat đã được làm mới cho persona mới.`,
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'quota') {
+      return interaction.reply({ content: getQuotaStatusText(user.id), ephemeral: true });
+    }
+
+    if (commandName === 'tts') {
+      const mode = interaction.options.getString('mode');
+      const enabled = mode === 'on';
+      setUserTts(user.id, enabled);
+      return interaction.reply({
+        content: enabled
+          ? '🔊 Đã **bật TTS**: mỗi câu trả lời chat sẽ kèm file MP3 (đoạn đầu, tiếng Việt).'
+          : '🔇 Đã **tắt TTS**.',
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'speak') {
+      const text = interaction.options.getString('text');
+      await interaction.deferReply();
+      try {
+        const buf = await synthesizeSpeech(text, 'vi');
+        if (!buf) {
+          return interaction.editReply('❌ Không tạo được giọng nói. Thử đoạn ngắn hơn hoặc lại sau.');
+        }
+        const attachment = new AttachmentBuilder(buf, { name: 'nexus_speak.mp3' });
+        return interaction.editReply({ content: `🗣️ "${text.slice(0, 120)}${text.length > 120 ? '…' : ''}"`, files: [attachment] });
+      } catch (err) {
+        console.error('speak error', err);
+        return interaction.editReply('❌ Lỗi khi tạo TTS.');
       }
     }
   } catch (err) {
@@ -520,10 +674,41 @@ client.on('messageCreate', async (message) => {
   }
   userCooldowns.set(message.author.id, now);
 
+  // Hạn mức chat / ngày
+  const chatQuota = checkQuota(message.author.id, 'chat');
+  if (!chatQuota.allowed) {
+    return message.reply(chatQuota.message).catch(() => {});
+  }
+
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
   if (!prompt) {
     try { await message.reply('Bạn cần Nexus AI hỗ trợ gì nào?'); } catch (err) {}
     return;
+  }
+
+  // Toxic shield — chặn lời lẽ xúc phạm trước khi gọi API
+  const toxicReply = handleToxicBehavior(prompt);
+  if (toxicReply) {
+    return message.reply(toxicReply).catch(() => {});
+  }
+
+  // Phát hiện cảm xúc user (dùng cho tone + GIF + quick reply)
+  const { id: userEmotion } = detectUserEmotion(prompt);
+
+  // Phản hồi nhanh cho chào / cảm ơn rất ngắn — tiết kiệm API
+  const quickReply = tryQuickEmotionalReply(prompt, userEmotion);
+  if (quickReply) {
+    let gifUrl = null;
+    try {
+      gifUrl = await resolveEmotionalGif({
+        userEmotion,
+        replyText: quickReply,
+        getGifForEmotion,
+        getGifByKeyword,
+      });
+    } catch (_) {}
+    const embeds = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
+    return message.reply({ content: quickReply, embeds }).catch(() => message.reply(quickReply).catch(() => {}));
   }
 
   let isChannelLocked = false;
@@ -544,6 +729,13 @@ client.on('messageCreate', async (message) => {
     let activeAi = aiInstance;
     let selectedModel = DEFAULT_MODEL;
     let usingTicketKey = false;
+    let selectedPersona = DEFAULT_PERSONA_ID;
+    let customPersonaText = null;
+
+    // Persona ngoài ticket lấy từ UserPrefs (/persona)
+    const userPrefs = getUserPrefs(message.author.id);
+    selectedPersona = userPrefs.selectedPersona || DEFAULT_PERSONA_ID;
+    customPersonaText = userPrefs.customPersonaText || null;
 
     if (ticketData) {
       if (!ticketData.userApiKey) {
@@ -553,6 +745,9 @@ client.on('messageCreate', async (message) => {
       }
       activeAi = new GoogleGenAI({ apiKey: ticketData.userApiKey });
       selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
+      // Trong ticket: ưu tiên persona đã chọn trên kênh ticket
+      selectedPersona = ticketData.selectedPersona || DEFAULT_PERSONA_ID;
+      customPersonaText = ticketData.customPersonaText || null;
       usingTicketKey = true;
     }
 
@@ -560,16 +755,27 @@ client.on('messageCreate', async (message) => {
       return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
     }
 
-    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}`;
+    // Session tách theo model + persona để đổi tính cách không dính lịch sử cũ
+    const personaKeyPart =
+      selectedPersona === 'custom'
+        ? `custom_${(customPersonaText || '').slice(0, 40).replace(/\s+/g, '_')}`
+        : selectedPersona;
+    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}`;
+
     if (!userSessions.has(sessionKey)) {
       // Khôi phục lịch sử đã lưu trên đĩa (nếu có) thay vì luôn bắt đầu trống,
       // để bộ nhớ hội thoại sống sót qua các lần restart/redeploy.
       const restoredHistory = getSavedHistory(sessionKey);
+      const systemInstruction = getSystemInstructionForPersona(
+        SYSTEM_INSTRUCTION,
+        selectedPersona,
+        customPersonaText
+      );
       const chatSession = activeAi.chats.create({
         model: selectedModel,
         history: restoredHistory,
         config: {
-          systemInstruction: SYSTEM_INSTRUCTION,
+          systemInstruction,
           maxOutputTokens: 1024,
           thinkingConfig: { thinkingLevel: 'medium' },
         },
@@ -581,9 +787,25 @@ client.on('messageCreate', async (message) => {
     }
 
     const chat = userSessions.get(sessionKey);
+    // Gắn gợi ý cảm xúc vào tin nhắn (không đổi systemInstruction cố định của session)
+    let messageForModel = prompt;
+    if (userEmotion && userEmotion !== 'neutral') {
+      const toneLine =
+        userEmotion === 'sad' || userEmotion === 'lonely' || userEmotion === 'anxious'
+          ? `[Cảm xúc user: ${userEmotion} — hãy đồng cảm nhẹ, giọng trấn an, vẫn trả lời đúng trọng tâm]`
+          : userEmotion === 'angry'
+            ? `[Cảm xúc user: angry — giữ bình tĩnh, không đáp trả gay gắt, tập trung giải quyết]`
+            : userEmotion === 'tired'
+              ? `[Cảm xúc user: tired — trả lời ngắn gọn, dễ đọc]`
+              : userEmotion === 'confused'
+                ? `[Cảm xúc user: confused — giải thích rõ, đơn giản]`
+                : `[Cảm xúc user: ${userEmotion} — điều chỉnh giọng cho phù hợp]`;
+      messageForModel = `${toneLine}\n\n${prompt}`;
+    }
+
     let result;
     try {
-      result = await chat.sendMessage({ message: prompt });
+      result = await chat.sendMessage({ message: messageForModel });
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
       userSessions.delete(sessionKey);
@@ -605,6 +827,10 @@ client.on('messageCreate', async (message) => {
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
 
+    // Trừ hạn mức chat sau khi API thành công
+    consumeQuota(message.author.id, 'chat');
+    const quotaWarn = maybeWarn(message.author.id, 'chat');
+
     // Lưu lại lịch sử hội thoại xuống đĩa (debounced, tối đa 20 tin gần nhất,
     // tự động hết hạn sau 7 ngày không hoạt động - xem SessionManager.js).
     try {
@@ -618,47 +844,56 @@ client.on('messageCreate', async (message) => {
       console.warn('⚠️ Không thể lưu lịch sử session:', histErr);
     }
 
-    function extractKeywordsEnglish(text) {
-      if (!text) return null;
-      const words = text
-        .replace(/[^A-Za-z0-9\s]/g, ' ')
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length > 3);
-      const unique = Array.from(new Set(words));
-      return unique.slice(0, 2).join(' ');
-    }
-
     let gifUrl = null;
     try {
-      const keywords = extractKeywordsEnglish(replyText);
-      if (keywords) {
-        gifUrl = await getGifByKeyword(keywords);
-      }
+      gifUrl = await resolveEmotionalGif({
+        userEmotion,
+        replyText,
+        getGifForEmotion,
+        getGifByKeyword,
+      });
     } catch (e) {
-      console.warn('❌ Lỗi khi tìm GIF bằng từ khoá:', e);
+      console.warn('❌ Lỗi khi tìm GIF cảm xúc:', e);
       gifUrl = null;
     }
 
-    if (!gifUrl) {
-      const emotion = detectEmotion(replyText);
-      if (emotion) gifUrl = await getGifForEmotion(emotion);
+    // TTS (nếu user bật /tts on) — file MP3 đoạn đầu câu trả lời
+    let ttsAttachment = null;
+    if (userPrefs.ttsEnabled) {
+      try {
+        const audioBuf = await synthesizeSpeech(replyText, 'vi');
+        if (audioBuf) {
+          ttsAttachment = new AttachmentBuilder(audioBuf, { name: 'nexus_reply.mp3' });
+        }
+      } catch (ttsErr) {
+        console.warn('TTS reply error:', ttsErr && ttsErr.message);
+      }
     }
 
     const DISCORD_MAX = 2000;
     const gifEmbed = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
+    const files = ttsAttachment ? [ttsAttachment] : [];
 
-    if (replyText.length > DISCORD_MAX) {
+    let textOut = replyText;
+    if (quotaWarn) textOut = `${replyText}\n\n${quotaWarn}`;
+
+    if (textOut.length > DISCORD_MAX) {
       const safeChunkSize = 1900;
-      const chunks = replyText.match(new RegExp(`([\\s\\S]{1,${safeChunkSize}})`, 'g')) || [];
+      const chunks = textOut.match(new RegExp(`([\\s\\S]{1,${safeChunkSize}})`, 'g')) || [];
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         const isLast = i === chunks.length - 1;
-        await message.reply({ content: chunk, embeds: isLast ? gifEmbed : [] }).catch(() => {});
+        await message
+          .reply({
+            content: chunk,
+            embeds: isLast ? gifEmbed : [],
+            files: isLast ? files : [],
+          })
+          .catch(() => {});
       }
     } else {
-      await message.reply({ content: replyText, embeds: gifEmbed }).catch(async () => {
-        await message.reply(replyText).catch(() => {});
+      await message.reply({ content: textOut, embeds: gifEmbed, files }).catch(async () => {
+        await message.reply(textOut).catch(() => {});
       });
     }
   } catch (error) {
@@ -689,6 +924,8 @@ client.on('messageCreate', async (message) => {
     await loadAutoClearChannels().catch((e) => console.error('Lỗi load autoClear:', e));
     await loadTickets().catch((e) => console.error('Lỗi load tickets:', e));
     await loadSessionsFromFile().catch((e) => console.error('Lỗi load sessions:', e));
+    await loadQuota().catch((e) => console.error('Lỗi load quota:', e));
+    await loadUserPrefs().catch((e) => console.error('Lỗi load userPrefs:', e));
 
     if (DISCORD_TOKEN) {
       await client.login(DISCORD_TOKEN);
