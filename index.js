@@ -42,6 +42,15 @@ const {
   cleanupTempFile,
   checkMediaCooldown,
 } = require('./MediaGen.js');
+const {
+  loadSessionsFromFile,
+  startSessionCleanupScheduler,
+  getSavedHistory,
+  updateSessionHistory,
+  clearSessionHistory,
+  clearSessionsByPrefix,
+  flushSessionsNow,
+} = require('./SessionManager.js');
 
 // ==========================================
 // CONFIG & INIT
@@ -286,6 +295,7 @@ client.once('ready', async () => {
   }
 
   startAutoClearScheduler(client);
+  startSessionCleanupScheduler();
   await syncTicketsOnStartup(client).catch((e) => console.error('Lỗi syncTickets:', e));
 });
 
@@ -316,6 +326,8 @@ client.on('interactionCreate', async (interaction) => {
       for (const key of userSessions.keys()) {
         if (key.startsWith(user.id)) userSessions.delete(key);
       }
+      // Xoá luôn lịch sử đã lưu trên đĩa cho user này, không chỉ bộ nhớ RAM.
+      clearSessionsByPrefix(user.id);
       return interaction.reply('🔄 Đã xóa bộ nhớ lịch sử trò chuyện của bạn! Chúng ta có thể bắt đầu chủ đề mới.');
     }
 
@@ -550,9 +562,12 @@ client.on('messageCreate', async (message) => {
 
     const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}`;
     if (!userSessions.has(sessionKey)) {
+      // Khôi phục lịch sử đã lưu trên đĩa (nếu có) thay vì luôn bắt đầu trống,
+      // để bộ nhớ hội thoại sống sót qua các lần restart/redeploy.
+      const restoredHistory = getSavedHistory(sessionKey);
       const chatSession = activeAi.chats.create({
         model: selectedModel,
-        history: [],
+        history: restoredHistory,
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
           maxOutputTokens: 1024,
@@ -560,6 +575,9 @@ client.on('messageCreate', async (message) => {
         },
       });
       userSessions.set(sessionKey, chatSession);
+      if (restoredHistory.length > 0) {
+        console.log(`♻️ Đã khôi phục ${restoredHistory.length} tin nhắn lịch sử cho session ${sessionKey}`);
+      }
     }
 
     const chat = userSessions.get(sessionKey);
@@ -586,6 +604,19 @@ client.on('messageCreate', async (message) => {
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
+
+    // Lưu lại lịch sử hội thoại xuống đĩa (debounced, tối đa 20 tin gần nhất,
+    // tự động hết hạn sau 7 ngày không hoạt động - xem SessionManager.js).
+    try {
+      if (typeof chat.getHistory === 'function') {
+        const currentHistory = chat.getHistory();
+        updateSessionHistory(sessionKey, currentHistory, selectedModel);
+      } else {
+        console.warn('⚠️ chat.getHistory() không khả dụng trong SDK hiện tại — bỏ qua lưu lịch sử cho session này.');
+      }
+    } catch (histErr) {
+      console.warn('⚠️ Không thể lưu lịch sử session:', histErr);
+    }
 
     function extractKeywordsEnglish(text) {
       if (!text) return null;
@@ -657,6 +688,7 @@ client.on('messageCreate', async (message) => {
     await loadAllowedChannelsFromFile().catch((e) => console.error('Lỗi load allowedChannels:', e));
     await loadAutoClearChannels().catch((e) => console.error('Lỗi load autoClear:', e));
     await loadTickets().catch((e) => console.error('Lỗi load tickets:', e));
+    await loadSessionsFromFile().catch((e) => console.error('Lỗi load sessions:', e));
 
     if (DISCORD_TOKEN) {
       await client.login(DISCORD_TOKEN);
@@ -683,14 +715,17 @@ process.on('beforeExit', () => {
     saveTimeout = null;
   }
   saveAllowedChannelsToFile().catch((err) => console.error('❌ Lỗi khi lưu trước khi thoát:', err));
+  flushSessionsNow().catch((err) => console.error('❌ Lỗi khi lưu sessions trước khi thoát:', err));
 });
 
 process.on('SIGINT', async () => {
   try { await saveAllowedChannelsToFile(); } catch (err) {}
+  try { await flushSessionsNow(); } catch (err) {}
   process.exit();
 });
 
 process.on('SIGTERM', async () => {
   try { await saveAllowedChannelsToFile(); } catch (err) {}
+  try { await flushSessionsNow(); } catch (err) {}
   process.exit();
 });
