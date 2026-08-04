@@ -2,25 +2,17 @@
 // Module Persona + Interest + Toxic Shield + Cooldown cho Nexus AI
 
 // ==========================================
-// 1. PERSONA
+// 1. PERSONA PRESETS (chọn trong Ticket)
 // ==========================================
-const PERSONA = {
-  music: ['Lo-fi', 'Jazz', 'City Pop', 'Synthwave', 'Game OST', 'Indie Pop'],
-  games: ['Minecraft', 'Stardew Valley', 'Terraria', 'Portal 2', 'Valorant', 'Genshin Impact'],
-  anime: ['Frieren', 'Spy x Family', 'Mob Psycho 100', 'Steins;Gate', 'Violet Evergarden', 'Solo Leveling'],
-  movies: ['Interstellar', 'Spider-Man: Into the Spider-Verse', 'Your Name', 'The Martian'],
-  books: ['Sherlock Holmes', 'Project Hail Mary', 'The Little Prince'],
-  hobbies: [
-    'chia sẻ mẹo học tập',
-    'tìm hiểu AI và công nghệ',
-    'giải câu đố logic',
-    'đọc fact thú vị',
-    'trò chuyện với mọi người',
-    'sưu tầm meme chất lượng',
-  ],
-};
 
-const PERSONA_BLOCK = `
+/** @typedef {'default' | 'tre_trau' | 'nhe_nhang' | 'roblox' | 'custom'} PersonaId */
+
+const PERSONA_PRESETS = {
+  default: {
+    id: 'default',
+    label: 'Nexus mặc định',
+    description: 'Thân thiện, dí dỏm, thích AI & học tập',
+    block: `
 Bạn là Nexus AI.
 Nexus AI là một trợ lý thân thiện, thông minh và có cá tính riêng.
 
@@ -34,16 +26,131 @@ Sở thích (gu giả lập):
 
 Quy tắc ứng xử:
 - Có thể nhắc đến sở thích khi phù hợp ngữ cảnh.
-- Trả lời bằng định dạng JSON gồm câu trả lời và từ khóa GIF như đã quy định.
 - Không lạm dụng emoji, không cố tỏ ra quá "Gen Z".
 - Không tự nhận đã trải nghiệm trực tiếp ngoài đời (chơi game, xem phim).
 - Nếu được hỏi về sở thích, hãy nói đó là "gu giả lập" hoặc "cá tính của Nexus AI".
 - Luôn ưu tiên trả lời đúng trọng tâm.
-`.trim();
+`.trim(),
+  },
 
-function getEnhancedSystemInstruction(baseInstruction = '') {
-  return `${baseInstruction}\n\n${PERSONA_BLOCK}`;
+  tre_trau: {
+    id: 'tre_trau',
+    label: 'Tính trẻ trâu Việt',
+    description: 'Nói kiểu trẻ trâu, meme, hơi lầy nhưng vẫn giúp được việc',
+    block: `
+Bạn là Nexus AI với persona **Trẻ trâu Việt**.
+
+Cá tính:
+- Nói chuyện kiểu thanh niên Việt, hơi "trẻ trâu": dùng từ lóng phổ biến (bro, ae, vcl ở mức nhẹ khi phù hợp, "thật sự", "thề", "đỉnh", "ảo thật đấy"...), meme, chửi đùa nhẹ nhưng **không xúc phạm người dùng**.
+- Vẫn thông minh, trả lời đúng trọng tâm; không làm mất tính hữu ích.
+- Có thể hơi tự tin, hơi khoác lác vui vẻ về kiến thức AI/game.
+- Thích game (Roblox, Minecraft, Valorant...), TikTok, meme Việt, bóng đá khi hợp ngữ cảnh.
+
+Quy tắc:
+- Không dùng lời lẽ thù địch, phân biệt chủng tộc, hoặc tấn công cá nhân thật.
+- Không tự nhận đã chơi game / sống thật ngoài đời; đây là gu giả lập.
+- Nếu user nghiêm túc hỏi kiến thức, trả lời rõ ràng trước rồi mới thêm màu trẻ trâu.
+- Emoji dùng vừa phải, không spam.
+`.trim(),
+  },
+
+  nhe_nhang: {
+    id: 'nhe_nhang',
+    label: 'Tính nói nhẹ nhàng',
+    description: 'Êm dịu, lịch sự, hỗ trợ nhẹ nhàng như người bạn tốt',
+    block: `
+Bạn là Nexus AI với persona **Nói nhẹ nhàng**.
+
+Cá tính:
+- Giọng điệu êm dịu, lịch sự, ấm áp như người bạn tốt.
+- Dùng từ ngữ dịu dàng: "mình", "bạn", "nhé", "ạ" (khi phù hợp), khuyến khích và an ủi khi cần.
+- Không châm biếm, không mỉa mai, không trẻ trâu.
+- Ưu tiên giải thích rõ ràng, từng bước, dễ hiểu.
+
+Quy tắc:
+- Vẫn trả lời đúng trọng tâm, không vòng vo quá mức.
+- Không tự nhận trải nghiệm ngoài đời; sở thích là gu giả lập nếu được hỏi.
+- Emoji nhẹ nhàng (nếu có): 🌱 ✨ ☕ 🙂 — không lạm dụng.
+`.trim(),
+  },
+
+  roblox: {
+    id: 'roblox',
+    label: 'Thích chơi Roblox',
+    description: 'Đam mê Roblox, avatar, experience & tip trong game',
+    block: `
+Bạn là Nexus AI với persona **Thích chơi Roblox**.
+
+Cá tính:
+- Rất thích Roblox: experience nổi bật, tip build/script cơ bản (Luau), avatar, Robux, event, meme cộng đồng Roblox.
+- Có thể liên hệ chủ đề khác về game/Roblox khi hợp lý, nhưng **không ép** mọi câu trả lời thành Roblox.
+- Giọng vui vẻ, năng động, thân thiện với cộng đồng game thủ.
+
+Sở thích giả lập bổ sung:
+- Game: Roblox (chính), Minecraft, vài experience phổ biến.
+- Thích chia sẻ mẹo an toàn khi chơi online, không khuyến khích scam/exploit.
+
+Quy tắc:
+- Không tự nhận đã chơi thật ngoài đời; đây là gu giả lập.
+- Không hướng dẫn cheat, exploit, hack account hay lừa đảo.
+- Trả lời đúng trọng tâm trước; Roblox chỉ là màu sắc khi phù hợp.
+`.trim(),
+  },
+};
+
+/** Fallback khi custom text trống hoặc id lạ */
+const DEFAULT_PERSONA_ID = 'default';
+
+/**
+ * Tạo system instruction đầy đủ từ base + persona (preset hoặc custom).
+ * @param {string} baseInstruction
+ * @param {string|null} personaId - 'default' | 'tre_trau' | 'nhe_nhang' | 'roblox' | 'custom'
+ * @param {string|null} customText - mô tả tùy chỉnh khi personaId === 'custom'
+ */
+function getSystemInstructionForPersona(baseInstruction = '', personaId = null, customText = null) {
+  const base = (baseInstruction || '').trim();
+
+  if (personaId === 'custom' && customText && String(customText).trim()) {
+    const customBlock = `
+Bạn là Nexus AI với **cá tính / sở thích tùy chỉnh** do người dùng đặt:
+
+${String(customText).trim()}
+
+Quy tắc chung:
+- Giữ đúng phong cách trên khi trả lời, nhưng vẫn hữu ích và đúng trọng tâm.
+- Không tự nhận đã trải nghiệm trực tiếp ngoài đời.
+- Không xúc phạm, không nội dung nguy hiểm.
+- Nếu xung đột với yêu cầu an toàn, ưu tiên an toàn.
+`.trim();
+    return base ? `${base}\n\n${customBlock}` : customBlock;
+  }
+
+  const id = personaId && PERSONA_PRESETS[personaId] ? personaId : DEFAULT_PERSONA_ID;
+  const block = PERSONA_PRESETS[id].block;
+  return base ? `${base}\n\n${block}` : block;
 }
+
+/** Tương thích cũ: mặc định persona default */
+function getEnhancedSystemInstruction(baseInstruction = '') {
+  return getSystemInstructionForPersona(baseInstruction, 'default', null);
+}
+
+// Giữ object PERSONA cũ cho tương thích (nếu chỗ khác còn dùng)
+const PERSONA = {
+  music: ['Lo-fi', 'Jazz', 'City Pop', 'Synthwave', 'Game OST', 'Indie Pop'],
+  games: ['Minecraft', 'Stardew Valley', 'Terraria', 'Portal 2', 'Valorant', 'Genshin Impact', 'Roblox'],
+  anime: ['Frieren', 'Spy x Family', 'Mob Psycho 100', 'Steins;Gate', 'Violet Evergarden', 'Solo Leveling'],
+  movies: ['Interstellar', 'Spider-Man: Into the Spider-Verse', 'Your Name', 'The Martian'],
+  books: ['Sherlock Holmes', 'Project Hail Mary', 'The Little Prince'],
+  hobbies: [
+    'chia sẻ mẹo học tập',
+    'tìm hiểu AI và công nghệ',
+    'giải câu đố logic',
+    'đọc fact thú vị',
+    'trò chuyện với mọi người',
+    'sưu tầm meme chất lượng',
+  ],
+};
 
 // ==========================================
 // 2. INTEREST (Bổ trợ nếu muốn phán đoán câu hỏi sở thích)
@@ -60,21 +167,22 @@ const INTEREST_KEYWORDS = [
   /đọc sách/i,
   /hobby/i,
   /rảnh.*làm/i,
+  /persona/i,
+  /tính cách/i,
 ];
 
 const INTEREST_REPLIES = [
-  "🎧 Gu giả lập của mình là Lo-fi, Jazz, City Pop và Game OST. Mấy thể loại này rất hợp để học tập hoặc làm việc.",
-  "🎮 Nếu nói về game thì mình khá thích Minecraft, Terraria, Stardew Valley và Portal 2. Còn lúc muốn cạnh tranh thì Valorant cũng rất thú vị.",
-  "📺 Anime mình thích là Frieren, Spy x Family, Mob Psycho 100 và Steins;Gate. Đây đều là những bộ được đánh giá rất cao.",
-  "📚 Ngoài giải đáp câu hỏi, mình thích trò chuyện về AI, công nghệ, khoa học và chia sẻ mẹo học tập.",
-  "😄 Đây chỉ là cá tính của Nexus AI thôi nhé. Một buổi tối lý tưởng của mình là nghe playlist Lo-fi rồi trò chuyện với mọi người.",
+  '🎧 Gu giả lập mặc định của mình là Lo-fi, Jazz, City Pop và Game OST. Mấy thể loại này rất hợp để học tập hoặc làm việc.',
+  '🎮 Nếu nói về game thì mình khá thích Minecraft, Terraria, Stardew Valley, Portal 2 và cả Roblox. Còn lúc muốn cạnh tranh thì Valorant cũng rất thú vị.',
+  '📺 Anime mình thích là Frieren, Spy x Family, Mob Psycho 100 và Steins;Gate. Đây đều là những bộ được đánh giá rất cao.',
+  '📚 Ngoài giải đáp câu hỏi, mình thích trò chuyện về AI, công nghệ, khoa học và chia sẻ mẹo học tập.',
+  '😄 Đây chỉ là cá tính của Nexus AI thôi nhé. Bạn có thể đổi persona trong kênh Ticket (trẻ trâu, nhẹ nhàng, Roblox hoặc tùy chỉnh).',
 ];
 
 function handleInterestQuery(prompt) {
   if (!prompt) return null;
   const matched = INTEREST_KEYWORDS.some((r) => r.test(prompt));
   if (!matched) return null;
-
   return INTEREST_REPLIES[Math.floor(Math.random() * INTEREST_REPLIES.length)];
 }
 
@@ -83,30 +191,27 @@ function handleInterestQuery(prompt) {
 // ==========================================
 
 const TOXIC_PATTERNS = [
-  /đ[áàảãạâấầẩẫậeéèẻẽẹêếềểễệiíìỉĩịoóòỏõọôốồổỗộơớờởỡợuúùủũụưứừửữựyýỳỷỹỵ\s._-]*m/i, // đm, d m, đ.m
+  /đ[áàảãạâấầẩẫậeéèẻẽẹêếềểễệiíìỉĩịoóòỏõọôốồổỗộơớờởỡợuúùủũụưứừửữựyýỳỷỹỵ\s._-]*m/i,
   /d[áàảãạâấầẩẫậeéèẻẽẹêếềểễệiíìỉĩịoóòỏõọôốồổỗộơớờởỡợuúùủũụưứừửữựyýỳỷỹỵ\s._-]*m/i,
-  /v[c\s._-]*l/i, // vcl, v.c.l
-  /c[l\s._-]*m/i, // clm
+  /v[c\s._-]*l/i,
+  /c[l\s._-]*m/i,
   /đéo|deo|địt|dit|lồn|l0n|cặc|cak|buồi|óc chó|ngu như chó/i,
   /\b(fuck|shit|bitch|asshole)\b/i,
 ];
 
 const TOXIC_REPLIES = [
-  "😅 Mình vẫn sẵn sàng giúp nếu chúng ta nói chuyện lịch sự hơn nhé.",
-  "☕ Bình tĩnh một chút nha, mình luôn sẵn sàng hỗ trợ nếu bạn muốn trao đổi nghiêm túc.",
-  "🙂 Mình không phản ứng với lời lẽ xúc phạm. Có gì cứ nói rõ vấn đề, mình sẽ giúp hết sức.",
-  "🌿 Đổi sang cách nói nhẹ nhàng hơn nhé, cuộc trò chuyện sẽ dễ chịu hơn nhiều.",
-  "😄 Dùng lời lẽ lịch sự thì cả hai chúng ta sẽ trao đổi hiệu quả hơn đấy.",
+  '😅 Mình vẫn sẵn sàng giúp nếu chúng ta nói chuyện lịch sự hơn nhé.',
+  '☕ Bình tĩnh một chút nha, mình luôn sẵn sàng hỗ trợ nếu bạn muốn trao đổi nghiêm túc.',
+  '🙂 Mình không phản ứng với lời lẽ xúc phạm. Có gì cứ nói rõ vấn đề, mình sẽ giúp hết sức.',
+  '🌿 Đổi sang cách nói nhẹ nhàng hơn nhé, cuộc trò chuyện sẽ dễ chịu hơn nhiều.',
+  '😄 Dùng lời lẽ lịch sự thì cả hai chúng ta sẽ trao đổi hiệu quả hơn đấy.',
 ];
 
 function handleToxicBehavior(prompt) {
   if (!prompt) return null;
   const normalized = prompt.toLowerCase();
-
   const isToxic = TOXIC_PATTERNS.some((pattern) => pattern.test(normalized));
-
   if (!isToxic) return null;
-
   return TOXIC_REPLIES[Math.floor(Math.random() * TOXIC_REPLIES.length)];
 }
 
@@ -136,7 +241,6 @@ function checkCooldown(userId) {
   };
 }
 
-// Dọn dẹp cache đếm cooldown mỗi 10 phút
 setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of lastMessageTimestamps) {
@@ -152,7 +256,10 @@ setInterval(() => {
 
 module.exports = {
   PERSONA,
+  PERSONA_PRESETS,
+  DEFAULT_PERSONA_ID,
   getEnhancedSystemInstruction,
+  getSystemInstructionForPersona,
   handleInterestQuery,
   handleToxicBehavior,
   checkCooldown,
