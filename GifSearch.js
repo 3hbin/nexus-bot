@@ -4,7 +4,11 @@ const fetch = (typeof globalThis.fetch === 'function') ? globalThis.fetch : (() 
   try { return require('node-fetch'); } catch (e) { return null; }
 })();
 
-const GIPHY_API_KEY = process.env.GIPHY_API_KEY || '';
+const GIPHY_API_KEY = (process.env.GIPHY_API_KEY || '').trim();
+
+if (!GIPHY_API_KEY) {
+  console.warn('⚠️ GifSearch: Chưa cấu hình GIPHY_API_KEY — tính năng GIF phản ứng sẽ bị tắt (sẽ không gửi GIF nào).');
+}
 
 const EMOTION_MAP = {
   hello: 'hello',
@@ -19,25 +23,51 @@ const EMOTION_MAP = {
 // "downsized" và "original" cho URL .gif gọn, ổn định hơn "fixed_height" khi copy nguyên link.
 const IMAGE_FIELD_PRIORITY = ['downsized', 'downsized_medium', 'fixed_height', 'original'];
 
+// URL Giphy hợp lệ luôn có dạng .gif và host thuộc giphy. Chặn hẳn mọi thứ khác
+// để không bao giờ đẩy một URL rác/không phải ảnh cho Discord.
+function isLikelyValidGifUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  if (!/^https:\/\//i.test(url)) return false;
+  if (!/\.(gif|webp|mp4)(\?|$)/i.test(url)) return false;
+  return true;
+}
+
 function extractStableGifUrl(gif) {
-  if (!gif || !gif.images) return gif?.url || null;
+  if (!gif || typeof gif !== 'object' || !gif.images) return null;
 
   for (const field of IMAGE_FIELD_PRIORITY) {
     const candidate = gif.images[field]?.url;
-    if (candidate && typeof candidate === 'string' && candidate.startsWith('http')) {
+    if (isLikelyValidGifUrl(candidate)) {
       return candidate;
     }
   }
-  return gif.url || null;
+  return null;
 }
 
 // Kiểm tra nhanh URL còn tồn tại thật trước khi trả về cho Discord (tránh gửi link chết/vỡ).
+// Dùng GET với Range header thay vì HEAD, vì nhiều CDN (kể cả Giphy) không hỗ trợ
+// HEAD đúng cách và có thể trả 404/405 dù URL vẫn sống — khiến GIF hợp lệ bị loại oan.
 async function validateGifUrl(url) {
   try {
     if (!url || !fetch) return false;
-    const res = await fetch(url, { method: 'HEAD' }).catch(() => null);
+
+    const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), 4000) : null;
+
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { Range: 'bytes=0-0' },
+        signal: controller ? controller.signal : undefined,
+      });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+
     if (!res) return false;
-    return res.ok;
+    // 206 (Partial Content) là kết quả mong đợi khi dùng Range; 200 cũng hợp lệ nếu server bỏ qua Range.
+    return res.ok || res.status === 206;
   } catch (e) {
     return false;
   }
@@ -68,6 +98,7 @@ async function chooseRandomGifFromData(data) {
 
 async function getGifForEmotion(emotion) {
   try {
+    if (!GIPHY_API_KEY) return null;
     if (!emotion) return null;
     const q = EMOTION_MAP[emotion] || emotion;
     return await getGifByKeyword(q);
@@ -105,7 +136,7 @@ async function getGifByKeyword(keyword) {
       // handle 404, 401 (key sai), 429 (rate limit) hoặc status khác
       console.warn('GifSearch: search returned non-ok status', res.status);
       if (res.status === 401 || res.status === 403) {
-        console.error('GifSearch: GIPHY_API_KEY có thể không hợp lệ hoặc bị thu hồi.');
+        console.error('GifSearch: GIPHY_API_KEY không hợp lệ hoặc bị thu hồi. Kiểm tra lại giá trị trong Render Environment Variables.');
         return null;
       }
       if (res.status === 404 || res.status === 429) return await fallbackTrending();
@@ -139,7 +170,12 @@ async function fallbackTrending() {
       console.warn('GifSearch: trending network error', e);
       return null;
     });
-    if (!r || !r.ok) return null;
+    if (!r || !r.ok) {
+      if (r && (r.status === 401 || r.status === 403)) {
+        console.error('GifSearch: GIPHY_API_KEY không hợp lệ khi gọi trending.');
+      }
+      return null;
+    }
     const d = await r.json().catch(() => null);
     return await chooseRandomGifFromData(d?.data || []);
   } catch (err) {
