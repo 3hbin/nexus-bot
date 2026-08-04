@@ -16,6 +16,7 @@ const EMOTION_MAP = {
   sorry: 'sorry',
   thinking: 'thinking',
   happy: 'happy',
+  shy: 'shy blushing embarrassed',
 };
 
 // Thứ tự ưu tiên các field ảnh của Giphy. Tránh dùng field có kèm nhiều
@@ -44,9 +45,22 @@ function extractStableGifUrl(gif) {
   return null;
 }
 
-// Kiểm tra nhanh URL còn tồn tại thật trước khi trả về cho Discord (tránh gửi link chết/vỡ).
-// Dùng GET với Range header thay vì HEAD, vì nhiều CDN (kể cả Giphy) không hỗ trợ
-// HEAD đúng cách và có thể trả 404/405 dù URL vẫn sống — khiến GIF hợp lệ bị loại oan.
+// Giphy trả "soft 404": khi một GIF đã bị xoá khỏi hệ thống, URL .gif của nó
+// KHÔNG trả HTTP 404 — nó vẫn trả 200 OK nhưng nội dung là một ảnh placeholder
+// cố định (icon "content unavailable", ví dụ ảnh con chó). Vì vậy không thể
+// chỉ dựa vào status code để xác nhận GIF còn "sống" — phải kiểm tra thêm
+// kích thước nội dung, vì placeholder luôn có cùng kích thước byte cố định.
+//
+// Ngưỡng dưới đây là ước lượng an toàn: file placeholder của Giphy rất nhỏ
+// (vài KB), trong khi GIF thật (kể cả bản "downsized" nhỏ nhất) gần như luôn
+// lớn hơn nhiều. Nếu vẫn gặp false positive/negative, log content-length ra
+// và điều chỉnh ngưỡng THRESHOLD cho phù hợp với thực tế bạn quan sát được.
+const PLACEHOLDER_SIZE_THRESHOLD_BYTES = 10000;
+
+// Kiểm tra nhanh URL còn tồn tại thật trước khi trả về cho Discord (tránh gửi link chết/vỡ
+// hoặc ảnh placeholder lỗi của Giphy).
+// Dùng GET thay vì HEAD, vì nhiều CDN (kể cả Giphy) không hỗ trợ HEAD đúng cách
+// và có thể trả 404/405 dù URL vẫn sống — khiến GIF hợp lệ bị loại oan.
 async function validateGifUrl(url) {
   try {
     if (!url || !fetch) return false;
@@ -58,7 +72,6 @@ async function validateGifUrl(url) {
     try {
       res = await fetch(url, {
         method: 'GET',
-        headers: { Range: 'bytes=0-0' },
         signal: controller ? controller.signal : undefined,
       });
     } finally {
@@ -66,8 +79,21 @@ async function validateGifUrl(url) {
     }
 
     if (!res) return false;
-    // 206 (Partial Content) là kết quả mong đợi khi dùng Range; 200 cũng hợp lệ nếu server bỏ qua Range.
-    return res.ok || res.status === 206;
+    if (!res.ok) return false;
+
+    const contentLengthHeader = res.headers?.get?.('content-length');
+    const contentLength = contentLengthHeader ? Number(contentLengthHeader) : null;
+
+    if (contentLength && contentLength < PLACEHOLDER_SIZE_THRESHOLD_BYTES) {
+      console.warn(
+        `GifSearch: nghi là ảnh placeholder lỗi của Giphy (chỉ ${contentLength} bytes), loại bỏ: ${url}`
+      );
+      return false;
+    }
+
+    // Nếu server không trả content-length (hiếm với Giphy), đành chấp nhận
+    // dựa vào status 200/206 như trước — tốt hơn là chặn nhầm GIF hợp lệ.
+    return true;
   } catch (e) {
     return false;
   }
