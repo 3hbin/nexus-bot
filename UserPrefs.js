@@ -1,12 +1,12 @@
 // UserPrefs.js
-// Lưu preference cá nhân (persona ngoài ticket, bật/tắt TTS…)
+// Lưu preference cá nhân (persona ngoài ticket, TTS, mode…)
 const fs = require('fs').promises;
 const path = require('path');
 const { DEFAULT_PERSONA_ID, PERSONA_PRESETS } = require('./Interest.js');
 
 const PREFS_FILE = path.join(__dirname, 'data', 'userPrefs.json');
 
-/** @type {Map<string, { selectedPersona?: string, customPersonaText?: string|null, ttsEnabled?: boolean }>} */
+/** @type {Map<string, { selectedPersona?: string, customPersonaText?: string|null, ttsEnabled?: boolean, replyMode?: string }>} */
 let prefs = new Map();
 let saveTimer = null;
 
@@ -60,6 +60,7 @@ function getUserPrefs(userId) {
       selectedPersona: DEFAULT_PERSONA_ID,
       customPersonaText: null,
       ttsEnabled: false,
+      replyMode: 'normal', // normal | strict
     }
   );
 }
@@ -83,6 +84,15 @@ function setUserTts(userId, enabled) {
   return cur;
 }
 
+function setUserReplyMode(userId, mode) {
+  const id = String(userId);
+  const cur = { ...getUserPrefs(id) };
+  cur.replyMode = mode === 'strict' ? 'strict' : 'normal';
+  prefs.set(id, cur);
+  scheduleSave();
+  return cur;
+}
+
 function personaDisplayName(personaId, customText) {
   if (personaId === 'custom') {
     const t = (customText || '').trim();
@@ -91,11 +101,23 @@ function personaDisplayName(personaId, customText) {
   return PERSONA_PRESETS[personaId]?.label || PERSONA_PRESETS[DEFAULT_PERSONA_ID].label;
 }
 
+/** Đoạn system instruction thêm khi mode strict */
+function getStrictModeBlock() {
+  return `
+[Chế độ STRICT]
+- Trả lời ngắn gọn, đúng trọng tâm, ít hoặc không emoji.
+- Không tán gẫu, không meme, không kéo dài.
+- Ưu tiên gạch đầu dòng khi liệt kê.
+`.trim();
+}
+
 module.exports = {
   loadUserPrefs,
   getUserPrefs,
   setUserPersona,
   setUserTts,
+  setUserReplyMode,
   personaDisplayName,
+  getStrictModeBlock,
   saveUserPrefsNow,
 };
