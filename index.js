@@ -69,6 +69,11 @@ const {
   consumeQuota,
   maybeWarn,
   getQuotaStatusText,
+  loadGeminiLock,
+  lockGeminiQuota,
+  clearGeminiLock,
+  getGeminiLockStatus,
+  parseGeminiQuotaError,
 } = require('./QuotaManager.js');
 const {
   loadUserPrefs,
@@ -674,10 +679,16 @@ client.on('messageCreate', async (message) => {
   }
   userCooldowns.set(message.author.id, now);
 
-  // Hạn mức chat / ngày
+  // Hạn mức chat / ngày (giới hạn bot tự quản)
   const chatQuota = checkQuota(message.author.id, 'chat');
   if (!chatQuota.allowed) {
     return message.reply(chatQuota.message).catch(() => {});
+  }
+
+  // Khóa khi Gemini free-tier / 429 — chờ reset
+  const geminiLock = getGeminiLockStatus();
+  if (geminiLock.locked) {
+    return message.reply(geminiLock.message).catch(() => {});
   }
 
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
@@ -810,6 +821,18 @@ client.on('messageCreate', async (message) => {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
       userSessions.delete(sessionKey);
 
+      // Hết quota Gemini → khóa chat đến lúc reset
+      const quotaInfo = parseGeminiQuotaError(apiErr, selectedModel);
+      if (quotaInfo.isQuota) {
+        const lock = await lockGeminiQuota({
+          retryAfterSec: quotaInfo.retryAfterSec,
+          isDailyQuota: quotaInfo.isDailyQuota,
+          model: quotaInfo.model || selectedModel,
+          reason: 'gemini_429',
+        });
+        return message.reply(lock.message || getGeminiLockStatus().message).catch(() => {});
+      }
+
       const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
       const keySource = usingTicketKey ? 'Key riêng của Ticket này' : 'Key mặc định của Bot';
 
@@ -826,6 +849,9 @@ client.on('messageCreate', async (message) => {
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
+
+    // API OK → bỏ khóa Gemini nếu còn (ví dụ vừa sang ngày mới / đổi key)
+    clearGeminiLock().catch(() => {});
 
     // Trừ hạn mức chat sau khi API thành công
     consumeQuota(message.author.id, 'chat');
@@ -925,6 +951,7 @@ client.on('messageCreate', async (message) => {
     await loadTickets().catch((e) => console.error('Lỗi load tickets:', e));
     await loadSessionsFromFile().catch((e) => console.error('Lỗi load sessions:', e));
     await loadQuota().catch((e) => console.error('Lỗi load quota:', e));
+    await loadGeminiLock().catch((e) => console.error('Lỗi load geminiLock:', e));
     await loadUserPrefs().catch((e) => console.error('Lỗi load userPrefs:', e));
 
     if (DISCORD_TOKEN) {
