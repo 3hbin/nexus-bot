@@ -10,13 +10,26 @@ if (!GIPHY_API_KEY) {
   console.warn('⚠️ GifSearch: Chưa cấu hình GIPHY_API_KEY — tính năng GIF phản ứng sẽ bị tắt (sẽ không gửi GIF nào).');
 }
 
+// Map cảm xúc (Emotion.js + legacy) → từ khóa Giphy (tiếng Anh cho kết quả ổn định hơn)
 const EMOTION_MAP = {
-  hello: 'hello',
-  thanks: 'thank you',
-  sorry: 'sorry',
-  thinking: 'thinking',
-  happy: 'happy',
-  shy: 'shy blushing embarrassed',
+  // Cơ bản / legacy
+  hello: 'hello wave anime',
+  thanks: 'thank you cute anime',
+  sorry: 'sorry anime',
+  thinking: 'thinking anime',
+  happy: 'happy dance anime',
+  shy: 'shy blushing embarrassed anime',
+
+  // Hệ thống phản hồi cảm xúc (Emotion.js)
+  sad: 'sad comfort hug anime',
+  lonely: 'lonely hug friendship anime',
+  angry: 'calm down anime',
+  anxious: 'relax calm anime',
+  tired: 'tired sleep anime',
+  confused: 'confused anime',
+  excited: 'excited hype anime',
+  love: 'heart love cute anime',
+  neutral: null,
 };
 
 // Thứ tự ưu tiên các field ảnh của Giphy. Tránh dùng field có kèm nhiều
@@ -50,11 +63,6 @@ function extractStableGifUrl(gif) {
 // cố định (icon "content unavailable", ví dụ ảnh con chó). Vì vậy không thể
 // chỉ dựa vào status code để xác nhận GIF còn "sống" — phải kiểm tra thêm
 // kích thước nội dung, vì placeholder luôn có cùng kích thước byte cố định.
-//
-// Ngưỡng dưới đây là ước lượng an toàn: file placeholder của Giphy rất nhỏ
-// (vài KB), trong khi GIF thật (kể cả bản "downsized" nhỏ nhất) gần như luôn
-// lớn hơn nhiều. Nếu vẫn gặp false positive/negative, log content-length ra
-// và điều chỉnh ngưỡng THRESHOLD cho phù hợp với thực tế bạn quan sát được.
 const PLACEHOLDER_SIZE_THRESHOLD_BYTES = 10000;
 
 // Kiểm tra nhanh URL còn tồn tại thật trước khi trả về cho Discord (tránh gửi link chết/vỡ
@@ -126,6 +134,11 @@ async function getGifForEmotion(emotion) {
   try {
     if (!GIPHY_API_KEY) return null;
     if (!emotion) return null;
+    // neutral hoặc map null → không tìm GIF
+    if (emotion === 'neutral') return null;
+    if (Object.prototype.hasOwnProperty.call(EMOTION_MAP, emotion) && EMOTION_MAP[emotion] === null) {
+      return null;
+    }
     const q = EMOTION_MAP[emotion] || emotion;
     return await getGifByKeyword(q);
   } catch (err) {
@@ -213,4 +226,5 @@ async function fallbackTrending() {
 module.exports = {
   getGifForEmotion,
   getGifByKeyword,
+  EMOTION_MAP,
 };
