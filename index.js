@@ -952,7 +952,12 @@ client.on('interactionCreate', async (interaction) => {
         if (!guildId) {
           return interaction.editReply('❌ Speak voice chỉ trong server.');
         }
-        const r = await speakInGuild(guildId, text.trim());
+        const member = interaction.member;
+        const r = await speakInGuild(guildId, text.trim(), {
+          guild: interaction.guild,
+          clientUserId: client.user.id,
+          userVoiceChannel: member?.voice?.channel || null,
+        });
         return interaction.editReply(r.message);
       }
     }
