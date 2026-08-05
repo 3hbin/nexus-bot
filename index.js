@@ -920,17 +920,22 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'voice') {
       const action = interaction.options.getString('action');
+
+      // defer ngay với join/speak (join có thể >3s → tránh "Ứng dụng không phản hồi")
+      if (action === 'join' || action === 'speak') {
+        await interaction.deferReply({ ephemeral: true });
+      }
+
       if (action === 'join') {
         const member = interaction.member;
         const ch = member?.voice?.channel;
         if (!ch) {
-          return interaction.reply({
-            content: '❌ Vào một kênh **voice** trước, rồi chạy `/voice action:join`.',
-            ephemeral: true,
-          });
+          return interaction.editReply(
+            '❌ Vào một kênh **voice** trước, rồi chạy `/voice action:join`.'
+          );
         }
         const r = await joinVoiceChannel(ch);
-        return interaction.reply({ content: r.message, ephemeral: !r.ok });
+        return interaction.editReply(r.message);
       }
       if (action === 'leave') {
         if (!guildId) {
@@ -942,12 +947,11 @@ client.on('interactionCreate', async (interaction) => {
       if (action === 'speak') {
         const text = interaction.options.getString('text');
         if (!text || !text.trim()) {
-          return interaction.reply({ content: '❌ Cần điền `text` khi speak.', ephemeral: true });
+          return interaction.editReply('❌ Cần điền `text` khi speak.');
         }
         if (!guildId) {
-          return interaction.reply({ content: '❌ Speak voice chỉ trong server.', ephemeral: true });
+          return interaction.editReply('❌ Speak voice chỉ trong server.');
         }
-        await interaction.deferReply({ ephemeral: true });
         const r = await speakInGuild(guildId, text.trim());
         return interaction.editReply(r.message);
       }
