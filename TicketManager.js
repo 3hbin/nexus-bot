@@ -321,25 +321,36 @@ async function handleTicketInteraction(interaction) {
       const row2 = new ActionRowBuilder().addComponents(selectPersona);
       const row3 = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('input_api_key').setLabel('🔑 Nhập Key Gemini').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('nexus_clear_memory')
+          .setLabel('Xóa memory')
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji('🧹'),
         new ButtonBuilder().setCustomId('close_ticket').setLabel('Đóng Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
       );
 
       const welcomeEmbed = new EmbedBuilder()
-        .setTitle('👋 Xin chào! Đây là kênh Ticket của bạn')
+        .setTitle('👋 Ticket AI của bạn đã sẵn sàng')
         .setDescription(
-          '• **Model mặc định**: `gemini-3.6-flash`\n' +
-            '• **Tính cách AI mặc định**: Nexus mặc định\n' +
-            '• Đổi Model / Tính cách bằng 2 menu phía dưới.\n' +
-            '• Chọn **Tùy chỉnh sở thích AI** sẽ mở form để bạn tự viết mô tả.\n\n' +
-            '**Hướng dẫn lấy Gemini API Key**:\n' +
-            '1) Truy cập: https://aistudio.google.com\n' +
-            '2) Chọn Project của bạn → Get API key → Create API key\n' +
-            '3) Quay lại kênh này, nhấn **🔑 Nhập Key Gemini** và dán API Key vào modal, hoặc gửi `key: <API_KEY>`.\n\n' +
-            '⚠️ Nếu vẫn báo lỗi liên lạc API sau khi nhập Key, hãy kiểm tra: Key còn hiệu lực, đã bật billing/Gemini API trên project đó, và chưa vượt hạn mức (quota).\n' +
-            '⚠️ Riêng **Gemini 3.1 Pro** bắt buộc Key phải có billing (không có gói miễn phí), nếu không sẽ luôn báo lỗi liên lạc API.\n\n' +
-            '💡 Sau khi đổi tính cách, tin nhắn tiếp theo sẽ dùng persona mới (session chat được tạo lại).'
+          '**Bắt đầu nhanh**\n' +
+            '1. Nhấn **🔑 Nhập Key Gemini** (hoặc gửi `key: AIza...`)\n' +
+            '2. Chọn **Model** + **Tính cách AI** ở menu dưới\n' +
+            '3. Nhắn bất kỳ — bot sẽ trả lời theo persona đã chọn\n\n' +
+            '**Lệnh & mẹo hữu ích**\n' +
+            '• `note: ...` — ghim ngữ cảnh (môn học, style trả lời…)\n' +
+            '• `/quiz` — đố vui trong ticket\n' +
+            '• `/summary` — tóm tắt hội thoại gần đây\n' +
+            '• `/dich` hoặc `dịch: ...` — dịch Việt ↔ Anh\n' +
+            '• Nút **🧹 Xóa memory** — xóa lịch sử chat ticket (không đóng kênh)\n' +
+            '• Nút **🔄 Trả lời lại** dưới mỗi câu AI\n\n' +
+            '**Lấy API Key**\n' +
+            '1) https://aistudio.google.com → Get API key\n' +
+            '2) Dán vào modal hoặc `key: <API_KEY>`\n\n' +
+            '⚠️ Model **Pro** thường cần Billing. Free tier có giới hạn request/ngày.\n' +
+            '💡 Đổi persona/model → tin nhắn tiếp theo dùng cấu hình mới.'
         )
-        .setColor(0x57f287);
+        .setColor(0x57f287)
+        .setFooter({ text: 'Nexus AI Ticket • Đóng ticket = xóa kênh + dữ liệu' });
 
       await created.send({ embeds: [welcomeEmbed], components: [row1, row2, row3] }).catch(() => {});
 
@@ -519,6 +530,36 @@ async function handleTicketInteraction(interaction) {
     // 5. XỬ LÝ NÚT "ĐÓNG TICKET"
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       try {
+        // Snapshot tin nhắn trước khi xóa (cho admin log / summary)
+        let transcript = '';
+        try {
+          const msgs = await interaction.channel.messages.fetch({ limit: 30 });
+          const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+          transcript = sorted
+            .filter((m) => !m.author.bot || m.author.id === interaction.client.user.id)
+            .map((m) => {
+              const who = m.author.bot ? 'Nexus' : m.author.username;
+              return `${who}: ${(m.content || '').slice(0, 200)}`;
+            })
+            .filter((l) => l.length > 8)
+            .slice(-20)
+            .join('\n');
+        } catch (_) {}
+
+        // Callback optional từ index.js
+        if (typeof global.__nexusOnTicketClose === 'function') {
+          try {
+            await global.__nexusOnTicketClose({
+              channelId: interaction.channelId,
+              channelName: interaction.channel.name,
+              closedBy: interaction.user,
+              transcript,
+            });
+          } catch (cbErr) {
+            console.warn('onTicketClose callback', cbErr && cbErr.message);
+          }
+        }
+
         await interaction.reply({
           content: '🔒 Kênh này sẽ được xóa và dữ liệu liên quan sẽ bị xoá hoàn toàn trong 3s...',
           ephemeral: true,
