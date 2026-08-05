@@ -390,7 +390,51 @@ const commands = [
     .addStringOption((opt) =>
       opt.setName('text').setDescription('Nội dung khi action=speak').setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName('summary')
+    .setDescription('Tóm tắt 15–20 tin nhắn gần nhất trong kênh/ticket này'),
+  new SlashCommandBuilder()
+    .setName('dich')
+    .setDescription('Dịch Việt ↔ Anh (tự nhận ngôn ngữ)')
+    .addStringOption((opt) =>
+      opt.setName('text').setDescription('Đoạn cần dịch').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('remind')
+    .setDescription('Nhắc bạn sau X phút')
+    .addIntegerOption((opt) =>
+      opt
+        .setName('minutes')
+        .setDescription('Số phút (1–1440)')
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(1440)
+    )
+    .addStringOption((opt) =>
+      opt.setName('note').setDescription('Nội dung nhắc').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('ship')
+    .setDescription('Chấm “độ hợp” vibe giữa 2 người (meme)')
+    .addUserOption((opt) => opt.setName('user1').setDescription('Người 1').setRequired(true))
+    .addUserOption((opt) => opt.setName('user2').setDescription('Người 2').setRequired(true)),
 ].map((cmd) => cmd.toJSON());
+
+/** @type {Map<string, NodeJS.Timeout>} */
+const pendingReminders = new Map();
+
+const EMOTION_REACTIONS = {
+  sad: '😢',
+  lonely: '🥺',
+  angry: '😤',
+  anxious: '😰',
+  tired: '😮‍💨',
+  confused: '🤔',
+  excited: '🤩',
+  love: '🥰',
+  happy: '😄',
+  thanks: '🙏',
+};
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN || 'none');
 
@@ -407,6 +451,34 @@ client.once('ready', async () => {
   startAutoClearScheduler(client);
   startSessionCleanupScheduler();
   setAdminLogClient(client);
+
+  // Đóng ticket → tóm tắt ngắn gửi admin log (6)
+  global.__nexusOnTicketClose = async ({ channelName, closedBy, transcript }) => {
+    let summary = transcript ? transcript.slice(0, 800) : '(không lấy được transcript)';
+    if (aiInstance && transcript && transcript.length > 40) {
+      try {
+        const chat = aiInstance.chats.create({
+          model: DEFAULT_MODEL,
+          config: {
+            maxOutputTokens: 300,
+            systemInstruction: 'Tóm tắt hội thoại ticket Discord bằng tiếng Việt, 3–6 gạch đầu dòng.',
+          },
+        });
+        const r = await chat.sendMessage({ message: transcript.slice(0, 3500) });
+        if (r?.text) summary = r.text.slice(0, 900);
+      } catch (_) {}
+    }
+    await adminLog({
+      title: '🔒 Ticket đã đóng',
+      description: summary,
+      color: 0xed4245,
+      fields: [
+        { name: 'Kênh', value: channelName || '?', inline: true },
+        { name: 'Đóng bởi', value: closedBy ? `${closedBy.tag}` : '?', inline: true },
+      ],
+    });
+  };
+
   await syncTicketsOnStartup(client).catch((e) => console.error('Lỗi syncTickets:', e));
   await adminLog({
     title: '🟢 Nexus AI online',
@@ -420,6 +492,30 @@ client.once('ready', async () => {
 // ==========================================
 client.on('interactionCreate', async (interaction) => {
   try {
+    // Nút xóa memory ticket
+    if (interaction.isButton() && interaction.customId === 'nexus_clear_memory') {
+      const ticketInfo = getTicketByChannel(interaction.channelId);
+      if (!ticketInfo) {
+        return interaction.reply({ content: '❌ Chỉ dùng trong kênh ticket.', ephemeral: true });
+      }
+      let cleared = 0;
+      for (const key of [...userSessions.keys()]) {
+        if (key.includes(`_${interaction.channelId}_`)) {
+          userSessions.delete(key);
+          cleared++;
+        }
+      }
+      try {
+        clearSessionsByPrefix(`${interaction.user.id}_${interaction.channelId}`);
+        // xóa mọi session gắn channel này
+        clearSessionsByPrefix(interaction.channelId);
+      } catch (_) {}
+      return interaction.reply({
+        content: `🧹 Đã xóa memory chat của ticket này (${cleared} session RAM). Lịch sử hội thoại bắt đầu lại từ tin nhắn sau.`,
+        ephemeral: true,
+      });
+    }
+
     // Nút Regenerate
     if (interaction.isButton() && interaction.customId.startsWith('nexus_regen:')) {
       const key = interaction.customId.slice('nexus_regen:'.length);
@@ -856,6 +952,113 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply(r.message);
       }
     }
+
+    if (commandName === 'summary') {
+      if (!aiInstance) {
+        return interaction.reply({ content: '❌ Bot chưa có GEMINI_API_KEY.', ephemeral: true });
+      }
+      await interaction.deferReply();
+      try {
+        const msgs = await interaction.channel.messages.fetch({ limit: 25 });
+        const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+        const lines = sorted
+          .map((m) => {
+            const who = m.author.bot ? 'Bot' : m.author.username;
+            const t = (m.content || '').replace(/\s+/g, ' ').trim();
+            return t ? `${who}: ${t.slice(0, 280)}` : null;
+          })
+          .filter(Boolean)
+          .slice(-20);
+        if (lines.length < 2) {
+          return interaction.editReply('ℹ️ Chưa đủ tin nhắn để tóm tắt.');
+        }
+        const promptSum =
+          'Tóm tắt cuộc trò chuyện sau bằng tiếng Việt, ngắn gọn (5–10 gạch đầu dòng), nêu chủ đề chính và kết luận nếu có:\n\n' +
+          lines.join('\n');
+        const chat = aiInstance.chats.create({
+          model: DEFAULT_MODEL,
+          config: { maxOutputTokens: 512, systemInstruction: 'Bạn là trợ lý tóm tắt hội thoại Discord, súc tích.' },
+        });
+        const result = await chat.sendMessage({ message: promptSum });
+        const text = result?.text || 'Không tóm tắt được.';
+        return interaction.editReply(`📋 **Tóm tắt hội thoại**\n${text.slice(0, 1900)}`);
+      } catch (e) {
+        console.error('summary error', e);
+        return interaction.editReply('❌ Lỗi khi tóm tắt (có thể hết quota Gemini).');
+      }
+    }
+
+    if (commandName === 'dich') {
+      if (!aiInstance) {
+        return interaction.reply({ content: '❌ Bot chưa có GEMINI_API_KEY.', ephemeral: true });
+      }
+      const text = interaction.options.getString('text');
+      await interaction.deferReply();
+      try {
+        const chat = aiInstance.chats.create({
+          model: DEFAULT_MODEL,
+          config: {
+            maxOutputTokens: 512,
+            systemInstruction:
+              'Bạn là dịch giả. Nếu input chủ yếu tiếng Việt → dịch sang English. Nếu chủ yếu English → dịch sang tiếng Việt. Chỉ trả bản dịch, không giải thích.',
+          },
+        });
+        const result = await chat.sendMessage({ message: text });
+        return interaction.editReply(`🌐 **Bản dịch**\n${(result?.text || '…').slice(0, 1900)}`);
+      } catch (e) {
+        console.error('dich error', e);
+        return interaction.editReply('❌ Không dịch được (quota/API).');
+      }
+    }
+
+    if (commandName === 'remind') {
+      const minutes = interaction.options.getInteger('minutes');
+      const note = interaction.options.getString('note');
+      const ms = minutes * 60 * 1000;
+      const id = `${user.id}_${Date.now()}`;
+      const channel = interaction.channel;
+      const timeout = setTimeout(async () => {
+        pendingReminders.delete(id);
+        try {
+          await channel.send({
+            content: `⏰ <@${user.id}> **Nhắc nhở:** ${note.slice(0, 500)}`,
+          });
+        } catch (_) {}
+      }, ms);
+      pendingReminders.set(id, timeout);
+      return interaction.reply({
+        content: `✅ Sẽ nhắc bạn sau **${minutes} phút**: _${note.slice(0, 200)}_`,
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'ship') {
+      const u1 = interaction.options.getUser('user1');
+      const u2 = interaction.options.getUser('user2');
+      const seed = [...`${u1.id}${u2.id}`].reduce((a, c) => a + c.charCodeAt(0), 0);
+      const score = seed % 101;
+      let label = '陌生人 😅';
+      if (score >= 90) label = 'Định mệnh 💍';
+      else if (score >= 75) label = 'Rất hợp 🔥';
+      else if (score >= 55) label = 'Khá ok ✨';
+      else if (score >= 35) label = 'Hơi lệch 👀';
+      else if (score >= 15) label = 'Khó đó 🫠';
+      else label = 'Xung khắc cosmic 💥';
+      const barFilled = Math.round(score / 10);
+      const bar = '█'.repeat(barFilled) + '░'.repeat(10 - barFilled);
+      return interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('💘 Ship meter')
+            .setDescription(
+              `**${u1.username}** × **${u2.username}**\n\n` +
+                `\`${bar}\` **${score}%**\n` +
+                `→ ${label}`
+            )
+            .setColor(score >= 70 ? 0xff69b4 : 0x5865f2),
+        ],
+      });
+    }
   } catch (err) {
     console.error('❌ Lỗi khi xử lý interaction:', err);
     if (interaction.replied || interaction.deferred) {
@@ -892,6 +1095,32 @@ client.on('messageCreate', async (message) => {
     }
     await setTicketNote(message.channel.id, noteText);
     return message.reply(`📌 Đã ghim ngữ cảnh ticket:\n> ${noteText.slice(0, 500)}${noteText.length > 500 ? '…' : ''}`);
+  }
+
+  // Dịch nhanh: dịch: ... / dich: ...
+  if (/^(dịch|dich)\s*:/i.test(message.content.trim())) {
+    if (!aiInstance) {
+      return message.reply('❌ Bot chưa có GEMINI_API_KEY.').catch(() => {});
+    }
+    const text = message.content.replace(/^(dịch|dich)\s*:/i, '').trim();
+    if (!text) {
+      return message.reply('ℹ️ Dùng: `dịch: đoạn cần dịch`').catch(() => {});
+    }
+    try {
+      await message.channel.sendTyping().catch(() => {});
+      const chat = aiInstance.chats.create({
+        model: DEFAULT_MODEL,
+        config: {
+          maxOutputTokens: 512,
+          systemInstruction:
+            'Bạn là dịch giả. Input tiếng Việt → English. Input English → tiếng Việt. Chỉ trả bản dịch.',
+        },
+      });
+      const result = await chat.sendMessage({ message: text });
+      return message.reply(`🌐 ${(result?.text || '…').slice(0, 1900)}`).catch(() => {});
+    } catch (e) {
+      return message.reply('❌ Không dịch được.').catch(() => {});
+    }
   }
 
   // Trả lời quiz nếu đang có câu đố trong kênh
@@ -1206,11 +1435,18 @@ client.on('messageCreate', async (message) => {
           .catch(() => {});
       }
     } else {
-      await message
+      const sent = await message
         .reply({ content: textOut, embeds: gifEmbed, files, components: [regenRow] })
         .catch(async () => {
-          await message.reply(textOut).catch(() => {});
+          return message.reply(textOut).catch(() => null);
         });
+      // Reaction theo emotion (9)
+      try {
+        const reactEmoji = EMOTION_REACTIONS[userEmotion];
+        if (reactEmoji && sent && typeof sent.react === 'function') {
+          await sent.react(reactEmoji).catch(() => {});
+        }
+      } catch (_) {}
     }
   } catch (error) {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
