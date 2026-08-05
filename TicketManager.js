@@ -528,57 +528,74 @@ async function handleTicketInteraction(interaction) {
     }
 
     // 5. XỬ LÝ NÚT "ĐÓNG TICKET"
+    // Reply ngay trước việc nặng — tránh DiscordAPIError 10062 Unknown interaction
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
+      const channel = interaction.channel;
+      const channelId = String(interaction.channelId);
+      const channelName = channel?.name || channelId;
+      const closedBy = interaction.user;
+
       try {
-        // Snapshot tin nhắn trước khi xóa (cho admin log / summary)
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: '🔒 Đang đóng ticket — kênh sẽ xóa sau vài giây...',
+            ephemeral: true,
+          });
+        }
+      } catch (replyErr) {
+        console.warn('TicketManager: close reply failed', replyErr && replyErr.message);
+      }
+
+      tickets.delete(channelId);
+      try {
+        await saveTickets();
+      } catch (e) {
+        console.error('TicketManager: saveTickets on close', e);
+      }
+
+      // Background: transcript + admin log (không block interaction)
+      setImmediate(async () => {
         let transcript = '';
         try {
-          const msgs = await interaction.channel.messages.fetch({ limit: 30 });
-          const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-          transcript = sorted
-            .filter((m) => !m.author.bot || m.author.id === interaction.client.user.id)
-            .map((m) => {
-              const who = m.author.bot ? 'Nexus' : m.author.username;
-              return `${who}: ${(m.content || '').slice(0, 200)}`;
-            })
-            .filter((l) => l.length > 8)
-            .slice(-20)
-            .join('\n');
+          if (channel && typeof channel.messages?.fetch === 'function') {
+            const msgs = await channel.messages.fetch({ limit: 30 });
+            const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+            transcript = sorted
+              .filter((m) => !m.author.bot || m.author.id === interaction.client.user.id)
+              .map((m) => {
+                const who = m.author.bot ? 'Nexus' : m.author.username;
+                return `${who}: ${(m.content || '').slice(0, 200)}`;
+              })
+              .filter((l) => l.length > 8)
+              .slice(-20)
+              .join('\n');
+          }
         } catch (_) {}
 
-        // Callback optional từ index.js
         if (typeof global.__nexusOnTicketClose === 'function') {
           try {
             await global.__nexusOnTicketClose({
-              channelId: interaction.channelId,
-              channelName: interaction.channel.name,
-              closedBy: interaction.user,
+              channelId,
+              channelName,
+              closedBy,
               transcript,
             });
           } catch (cbErr) {
             console.warn('onTicketClose callback', cbErr && cbErr.message);
           }
         }
+      });
 
-        await interaction.reply({
-          content: '🔒 Kênh này sẽ được xóa và dữ liệu liên quan sẽ bị xoá hoàn toàn trong 3s...',
-          ephemeral: true,
-        });
-        tickets.delete(String(interaction.channelId));
-        await saveTickets();
-        setTimeout(async () => {
-          try {
-            await interaction.channel.delete();
-          } catch (err) {
-            console.error('TicketManager: Lỗi khi xóa kênh ticket:', err);
-          }
-        }, 3000);
-      } catch (e) {
-        console.error('TicketManager: error closing ticket', e);
+      setTimeout(async () => {
         try {
-          await interaction.reply({ content: '❌ Không thể đóng kênh.', ephemeral: true });
-        } catch (e2) {}
-      }
+          if (channel && typeof channel.delete === 'function') {
+            await channel.delete();
+          }
+        } catch (err) {
+          console.error('TicketManager: Lỗi khi xóa kênh ticket:', err);
+        }
+      }, 3000);
+
       return true;
     }
 
