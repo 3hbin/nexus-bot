@@ -1,16 +1,12 @@
-// VoiceManager.js — Discord voice (join + TTS speak)
-// deps: @discordjs/voice, opusscript, ffmpeg-static, libsodium-wrappers (khuyến nghị)
+// VoiceManager.js — Discord voice + fallback MP3 khi Ready/UDP fail
 const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
 
-// Nạp encryption lib trước voice (Discord yêu cầu)
 try {
   require('libsodium-wrappers');
 } catch (_) {
   try {
     require('tweetnacl');
-  } catch (_) {
-    console.warn('⚠️ Voice: nên cài libsodium-wrappers để mã hóa voice ổn định hơn');
-  }
+  } catch (_) {}
 }
 
 let voiceLib = null;
@@ -26,13 +22,10 @@ try {
   if (ffmpegPath) {
     process.env.FFMPEG_PATH = ffmpegPath;
     process.env.FFMPEG_BIN = ffmpegPath;
-    console.log('✅ VoiceManager: ffmpeg-static =', ffmpegPath);
   }
-} catch {
-  console.warn('⚠️ VoiceManager: không có ffmpeg-static');
-}
+} catch (_) {}
 
-/** @type {Map<string, { connection: any, channelId: string, guild: any }>} */
+/** @type {Map<string, { connection: any, channelId: string }>} */
 const connections = new Map();
 
 function isVoiceAvailable() {
@@ -50,32 +43,27 @@ function destroyGuild(guildId) {
   connections.delete(id);
 }
 
-/**
- * Chờ connection sẵn sàng phát (Ready hoặc Connecting ổn định).
- */
 async function waitUntilPlayable(connection, ms) {
   const { VoiceConnectionStatus, entersState } = voiceLib;
-  const deadline = Date.now() + (ms || 25000);
+  const deadline = Date.now() + (ms || 20000);
   let lastErr = null;
-
   while (Date.now() < deadline) {
     const st = connection.state && connection.state.status;
     if (st === VoiceConnectionStatus.Ready) return true;
     if (st === VoiceConnectionStatus.Destroyed || st === VoiceConnectionStatus.Disconnected) {
-      throw new Error('Connection destroyed/disconnected (status=' + st + ')');
+      throw new Error('Connection ' + st);
     }
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, Math.min(8000, deadline - Date.now()));
+      await entersState(connection, VoiceConnectionStatus.Ready, Math.min(6000, deadline - Date.now()));
       return true;
     } catch (e) {
       lastErr = e;
-      // thử lại nếu vẫn Connecting / Signalling
       await new Promise(function (r) {
-        setTimeout(r, 800);
+        setTimeout(r, 600);
       });
     }
   }
-  throw lastErr || new Error('Timeout chờ Ready');
+  throw lastErr || new Error('Timeout Ready');
 }
 
 async function joinVoiceChannel(channel) {
@@ -83,8 +71,8 @@ async function joinVoiceChannel(channel) {
     return {
       ok: false,
       message:
-        '❌ Chưa có @discordjs/voice. package.json cần:\n' +
-        '`@discordjs/voice` `opusscript` `ffmpeg-static` `libsodium-wrappers`',
+        '❌ Chưa có @discordjs/voice. Cần deps voice trong package.json.\n' +
+        'Tạm dùng `/speak text:...` để nhận MP3.',
     };
   }
   if (!channel || typeof channel.isVoiceBased !== 'function' || !channel.isVoiceBased()) {
@@ -93,7 +81,6 @@ async function joinVoiceChannel(channel) {
 
   const { joinVoiceChannel: join, VoiceConnectionStatus } = voiceLib;
   const guildId = channel.guild.id;
-
   destroyGuild(guildId);
 
   let connection;
@@ -105,12 +92,7 @@ async function joinVoiceChannel(channel) {
       selfDeaf: false,
       selfMute: false,
     });
-
-    connections.set(guildId, {
-      connection: connection,
-      channelId: channel.id,
-      guild: channel.guild,
-    });
+    connections.set(guildId, { connection: connection, channelId: channel.id });
 
     connection.on('stateChange', function (oldS, newS) {
       console.log('[voice] ' + guildId + ' ' + oldS.status + ' -> ' + newS.status);
@@ -118,245 +100,157 @@ async function joinVoiceChannel(channel) {
         const cur = connections.get(guildId);
         if (cur && cur.connection === connection) connections.delete(guildId);
       }
-      // Tự rejoin nhẹ khi bị disconnect bất ngờ (một lần)
-      if (
-        newS.status === VoiceConnectionStatus.Disconnected &&
-        oldS.status !== VoiceConnectionStatus.Destroyed
-      ) {
-        try {
-          const { entersState, VoiceConnectionStatus: VCS } = voiceLib;
-          Promise.race([
-            entersState(connection, VCS.Signalling, 5000),
-            entersState(connection, VCS.Connecting, 5000),
-          ]).catch(function () {
-            try {
-              connection.destroy();
-            } catch (_) {}
-          });
-        } catch (_) {}
-      }
     });
-
     connection.on('error', function (err) {
-      console.error('[voice] connection error', err);
+      console.error('[voice] error', err);
     });
 
     try {
-      await waitUntilPlayable(connection, 25000);
-    } catch (e) {
-      console.warn('[voice] wait Ready failed', e && e.message);
-      // Vẫn giữ connection nếu chưa Destroyed — speak có thể retry
-      const st = connection.state && connection.state.status;
-      if (st === VoiceConnectionStatus.Destroyed) {
-        destroyGuild(guildId);
-        return {
-          ok: false,
-          message:
-            '❌ Join fail (Destroyed). Kiểm tra quyền Connect+Speak.\n' +
-            'Chi tiết: ' +
-            String(e.message || e).slice(0, 120),
-        };
-      }
+      await waitUntilPlayable(connection, 18000);
       return {
         ok: true,
+        message: '🔊 Đã vào <#' + channel.id + '> (Ready).\n`/voice action:speak text:...`',
+      };
+    } catch (e) {
+      const st = connection.state && connection.state.status;
+      console.warn('[voice] Ready fail', st, e && e.message);
+      // Giữ connection phòng speak retry; báo rõ có fallback MP3
+      return {
+        ok: true,
+        partial: true,
         message:
-          '⚠️ Đã vào <#' +
+          '⚠️ Bot đã vào <#' +
           channel.id +
-          '> nhưng Ready chậm (' +
-          st +
-          ').\n' +
-          'Thử `/voice action:speak text:test` — bot sẽ tự đợi/rejoin.',
+          '> nhưng voice **chưa Ready** (host/UDP).\n' +
+          'Thử `/voice action:speak` — nếu fail sẽ **tự gửi file MP3**.\n' +
+          'Hoặc dùng `/speak text:...` luôn.',
       };
     }
-
-    return {
-      ok: true,
-      message:
-        '🔊 Đã vào <#' +
-        channel.id +
-        '> (Ready).\n`/voice action:speak text:Xin chào`',
-    };
   } catch (e) {
-    console.error('joinVoice error', e);
     destroyGuild(guildId);
-    return { ok: false, message: '❌ Join lỗi: ' + String(e.message || e).slice(0, 180) };
+    return {
+      ok: false,
+      message:
+        '❌ Join lỗi: ' +
+        String(e.message || e).slice(0, 150) +
+        '\nDùng `/speak text:...` (MP3).',
+    };
   }
 }
 
 function leaveVoice(guildId) {
   const entry = connections.get(String(guildId));
   if (!entry || !entry.connection) {
-    return {
-      ok: false,
-      message: 'ℹ️ Không track connection. Kick bot khỏi voice thủ công nếu còn treo.',
-    };
+    return { ok: false, message: 'ℹ️ Không track connection. Kick bot khỏi voice nếu còn treo.' };
   }
   destroyGuild(guildId);
   return { ok: true, message: '👋 Đã rời kênh voice.' };
 }
 
 /**
- * Tìm voice channel bot đang đứng (theo guild cache) — fallback khi Map lệch.
+ * @returns {Promise<{ ok: boolean, message: string, mp3Buffer?: Buffer }>}
  */
-function findBotVoiceChannel(guild, clientUserId) {
-  if (!guild || !guild.channels) return null;
-  try {
-    const chans = guild.channels.cache.filter(function (c) {
-      return typeof c.isVoiceBased === 'function' && c.isVoiceBased();
-    });
-    for (const [, ch] of chans) {
-      if (ch.members && ch.members.has(clientUserId)) return ch;
-    }
-  } catch (_) {}
-  return null;
-}
-
-async function ensureConnection(guildId, guild, clientUserId) {
-  let entry = connections.get(String(guildId));
-  if (entry && entry.connection) {
-    try {
-      await waitUntilPlayable(entry.connection, 12000);
-      return entry;
-    } catch (_) {
-      // fall through → rejoin
-    }
-  }
-
-  // Rejoin vào kênh bot đang có mặt, hoặc kênh user
-  let channel = null;
-  if (guild) {
-    channel = findBotVoiceChannel(guild, clientUserId);
-  }
-  if (!channel) {
-    throw new Error('NO_CHANNEL');
-  }
-  const r = await joinVoiceChannel(channel);
-  if (!r.ok && !connections.has(String(guildId))) {
-    throw new Error(r.message || 'rejoin failed');
-  }
-  entry = connections.get(String(guildId));
-  if (!entry) throw new Error('rejoin no connection');
-  await waitUntilPlayable(entry.connection, 20000);
-  return entry;
-}
-
 async function speakInGuild(guildId, text, opts) {
   opts = opts || {};
-  if (!voiceLib) return { ok: false, message: '❌ Chưa cài @discordjs/voice.' };
-
   const id = String(guildId);
-  const guild = opts.guild || null;
-  const clientUserId = opts.clientUserId || null;
-  const userVoiceChannel = opts.userVoiceChannel || null;
+
+  // Luôn tạo TTS trước — dùng cho voice hoặc fallback MP3
+  let audioBuf = null;
+  try {
+    audioBuf = await synthesizeSpeech(text, 'vi');
+  } catch (e) {
+    console.warn('TTS fail', e && e.message);
+  }
+  if (!audioBuf) {
+    return { ok: false, message: '❌ Không tạo được audio TTS.' };
+  }
+
+  async function fallbackMp3(reason) {
+    console.warn('[voice] fallback MP3:', reason);
+    return {
+      ok: true,
+      fallback: true,
+      mp3Buffer: audioBuf,
+      message:
+        '📎 **Voice UDP không Ready trên host** — gửi file MP3 thay thế.\n' +
+        '_(Trên VPS voice trong kênh sẽ ổn hơn)_\n' +
+        'Lý do: ' +
+        String(reason || '').slice(0, 100),
+    };
+  }
+
+  if (!voiceLib) {
+    return fallbackMp3('chưa cài @discordjs/voice');
+  }
+
+  // Join kênh user nếu chưa có connection
+  if (opts.userVoiceChannel) {
+    const entry0 = connections.get(id);
+    if (!entry0 || !entry0.connection) {
+      await joinVoiceChannel(opts.userVoiceChannel);
+    }
+  }
+
+  let entry = connections.get(id);
+  if (!entry || !entry.connection) {
+    return fallbackMp3('bot chưa trong voice');
+  }
 
   try {
-    let entry = connections.get(id);
-
-    // Nếu user đang trong voice mà bot chưa track → join kênh user
-    if ((!entry || !entry.connection) && userVoiceChannel) {
-      const jr = await joinVoiceChannel(userVoiceChannel);
-      if (!jr.ok && !connections.has(id)) {
-        return { ok: false, message: jr.message };
-      }
-      entry = connections.get(id);
-    }
-
-    if (!entry || !entry.connection) {
-      try {
-        entry = await ensureConnection(id, guild, clientUserId);
-      } catch (e) {
-        if (String(e.message) === 'NO_CHANNEL') {
-          return {
-            ok: false,
-            message:
-              '❌ Bot chưa trong voice.\n1. Bạn vào voice\n2. `/voice action:join`\n3. Rồi speak\nHoặc `/speak` lấy MP3.',
-          };
-        }
-        return { ok: false, message: '❌ ' + String(e.message || e).slice(0, 200) };
-      }
-    }
-
-    // Đợi Ready (retry)
-    try {
-      await waitUntilPlayable(entry.connection, 20000);
-    } catch (e) {
-      // Thử join lại kênh user
-      if (userVoiceChannel) {
-        const jr = await joinVoiceChannel(userVoiceChannel);
-        entry = connections.get(id);
-        if (!entry) {
-          return {
-            ok: false,
-            message:
-              '❌ Voice không Ready sau rejoin.\n' +
-              String(e.message || e).slice(0, 100) +
-              '\nDùng `/speak` nếu host chặn UDP.',
-          };
-        }
-        await waitUntilPlayable(entry.connection, 20000);
-      } else {
-        return {
-          ok: false,
-          message:
-            '❌ Connection chưa Ready: ' +
-            String(e.message || e).slice(0, 120) +
-            '\nThử join lại hoặc `/speak`.',
-        };
-      }
-    }
-
-    const buf = await synthesizeSpeech(text, 'vi');
-    if (!buf) return { ok: false, message: '❌ TTS không tạo được audio.' };
-
-    let filePath = null;
-    try {
-      filePath = await writeTempMp3(buf);
-      const {
-        createAudioPlayer,
-        createAudioResource,
-        AudioPlayerStatus,
-        entersState,
-        StreamType,
-      } = voiceLib;
-
-      const resource = createAudioResource(filePath, {
-        inputType: StreamType ? StreamType.Arbitrary : undefined,
-        inlineVolume: true,
-      });
-      if (resource.volume) {
-        try {
-          resource.volume.setVolume(1.0);
-        } catch (_) {}
-      }
-
-      const player = createAudioPlayer();
-      const sub = entry.connection.subscribe(player);
-      if (!sub) {
-        return { ok: false, message: '❌ Subscribe player thất bại (connection chết). Join lại.' };
-      }
-
-      player.play(resource);
-      await entersState(player, AudioPlayerStatus.Playing, 15000);
-      player.on('error', function (err) {
-        console.warn('[voice] player error', err);
-      });
-      return { ok: true, message: '🗣️ Đang phát trong voice…' };
-    } catch (e) {
-      console.error('speakInGuild play', e);
-      return {
-        ok: false,
-        message: '❌ Phát lỗi: ' + String(e.message || e).slice(0, 160),
-      };
-    } finally {
-      if (filePath) {
-        setTimeout(function () {
-          cleanupTemp(filePath);
-        }, 120000);
-      }
-    }
+    await waitUntilPlayable(entry.connection, 15000);
   } catch (e) {
-    console.error('speakInGuild', e);
-    return { ok: false, message: '❌ ' + String(e.message || e).slice(0, 200) };
+    // Thử rejoin 1 lần
+    if (opts.userVoiceChannel) {
+      try {
+        await joinVoiceChannel(opts.userVoiceChannel);
+        entry = connections.get(id);
+        if (entry && entry.connection) {
+          await waitUntilPlayable(entry.connection, 12000);
+        } else {
+          return fallbackMp3(e.message || 'rejoin fail');
+        }
+      } catch (e2) {
+        return fallbackMp3(e2.message || e.message || 'Ready aborted');
+      }
+    } else {
+      return fallbackMp3(e.message || 'Ready aborted');
+    }
+  }
+
+  entry = connections.get(id);
+  if (!entry || !entry.connection) {
+    return fallbackMp3('mất connection');
+  }
+
+  let filePath = null;
+  try {
+    filePath = await writeTempMp3(audioBuf);
+    const { createAudioPlayer, createAudioResource, AudioPlayerStatus, entersState, StreamType } =
+      voiceLib;
+
+    const resource = createAudioResource(filePath, {
+      inputType: StreamType ? StreamType.Arbitrary : undefined,
+      inlineVolume: true,
+    });
+    const player = createAudioPlayer();
+    const sub = entry.connection.subscribe(player);
+    if (!sub) return fallbackMp3('subscribe fail');
+
+    player.play(resource);
+    await entersState(player, AudioPlayerStatus.Playing, 12000);
+    player.on('error', function (err) {
+      console.warn('[voice] player', err);
+    });
+    return { ok: true, message: '🗣️ Đang phát trong voice…' };
+  } catch (e) {
+    console.error('speak play error', e);
+    return fallbackMp3(e.message || 'play aborted');
+  } finally {
+    if (filePath) {
+      setTimeout(function () {
+        cleanupTemp(filePath);
+      }, 120000);
+    }
   }
 }
 
@@ -365,7 +259,4 @@ module.exports = {
   joinVoiceChannel: joinVoiceChannel,
   leaveVoice: leaveVoice,
   speakInGuild: speakInGuild,
-  getConnection: function (gid) {
-    return connections.get(String(gid)) || null;
-  },
 };
