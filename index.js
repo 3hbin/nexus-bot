@@ -452,8 +452,11 @@ client.on('interactionCreate', async (interaction) => {
         if (!activeAi) {
           return interaction.editReply('❌ Chưa có GEMINI_API_KEY.');
         }
-        const lock = getGeminiLockStatus();
-        if (lock.locked) return interaction.editReply(lock.message);
+        // Regenerate: chỉ check lock bot khi không dùng key ticket
+        if (!(ticketData && ticketData.userApiKey)) {
+          const lock = getGeminiLockStatus();
+          if (lock.locked) return interaction.editReply(lock.message);
+        }
         const q = checkQuota(interaction.user.id, 'chat');
         if (!q.allowed) return interaction.editReply(q.message);
 
@@ -506,12 +509,17 @@ client.on('interactionCreate', async (interaction) => {
         console.error('regen error', e);
         const qi = parseGeminiQuotaError(e, DEFAULT_MODEL);
         if (qi.isQuota) {
-          await lockGeminiQuota({
-            retryAfterSec: qi.retryAfterSec,
-            isDailyQuota: qi.isDailyQuota,
-            model: qi.model || DEFAULT_MODEL,
-          });
-          return interaction.editReply(getGeminiLockStatus().message);
+          if (!(ticketData && ticketData.userApiKey)) {
+            await lockGeminiQuota({
+              retryAfterSec: qi.retryAfterSec,
+              isDailyQuota: qi.isDailyQuota,
+              model: qi.model || DEFAULT_MODEL,
+            });
+            return interaction.editReply(getGeminiLockStatus().message);
+          }
+          return interaction.editReply(
+            '⏳ Key ticket hết quota. Đổi model hoặc dán `key:` project khác.'
+          );
         }
         return interaction.editReply('❌ Lỗi khi tạo lại câu trả lời.');
       }
@@ -921,10 +929,14 @@ client.on('messageCreate', async (message) => {
     return message.reply(chatQuota.message).catch(() => {});
   }
 
-  // Khóa khi Gemini free-tier / 429 — chờ reset
-  const geminiLock = getGeminiLockStatus();
-  if (geminiLock.locked) {
-    return message.reply(geminiLock.message).catch(() => {});
+  // Khóa Gemini chỉ khi dùng KEY BOT — ticket có key riêng vẫn chat được
+  const earlyTicket = getTicketByChannel(message.channel.id);
+  const usingOwnTicketKey = !!(earlyTicket && earlyTicket.userApiKey);
+  if (!usingOwnTicketKey) {
+    const geminiLock = getGeminiLockStatus();
+    if (geminiLock.locked) {
+      return message.reply(geminiLock.message).catch(() => {});
+    }
   }
 
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
@@ -1072,16 +1084,29 @@ client.on('messageCreate', async (message) => {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
       userSessions.delete(sessionKey);
 
-      // Hết quota Gemini → khóa chat đến lúc reset
+      // Hết quota Gemini
       const quotaInfo = parseGeminiQuotaError(apiErr, selectedModel);
       if (quotaInfo.isQuota) {
-        const lock = await lockGeminiQuota({
-          retryAfterSec: quotaInfo.retryAfterSec,
-          isDailyQuota: quotaInfo.isDailyQuota,
-          model: quotaInfo.model || selectedModel,
-          reason: 'gemini_429',
-        });
-        return message.reply(lock.message || getGeminiLockStatus().message).catch(() => {});
+        // Chỉ khóa TOÀN BOT khi lỗi từ key mặc định — ticket key riêng không khóa server
+        if (!usingTicketKey) {
+          const lock = await lockGeminiQuota({
+            retryAfterSec: quotaInfo.retryAfterSec,
+            isDailyQuota: quotaInfo.isDailyQuota,
+            model: quotaInfo.model || selectedModel,
+            reason: 'gemini_429',
+          });
+          return message.reply(lock.message || getGeminiLockStatus().message).catch(() => {});
+        }
+        // Ticket + key user: báo lỗi tại chỗ, gợi ý đổi model / key
+        return message
+          .reply(
+            `⏳ **Key Gemini trong ticket này đã hết quota (free tier).**\n` +
+              `> Model: \`${selectedModel}\`\n` +
+              `• Đổi model trong menu ticket (flash-lite / 3.5…)\n` +
+              `• Hoặc dán key project khác: \`key: AIza...\`\n` +
+              `• Hoặc bật Billing / đợi reset quota trên AI Studio.`
+          )
+          .catch(() => {});
       }
 
       const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
