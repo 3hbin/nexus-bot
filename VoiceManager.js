@@ -1,6 +1,5 @@
-// VoiceManager.js — join voice + phát TTS (cần @discordjs/voice + ffmpeg trên server)
-const fs = require('fs');
-const path = require('path');
+// VoiceManager.js — join voice + phát TTS
+// Cần: @discordjs/voice, opusscript, (tuỳ chọn) ffmpeg-static
 const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
 
 let voiceLib = null;
@@ -8,6 +7,21 @@ try {
   voiceLib = require('@discordjs/voice');
 } catch {
   console.warn('⚠️ VoiceManager: chưa cài @discordjs/voice — /voice sẽ báo hướng dẫn cài.');
+}
+
+// Ưu tiên ffmpeg-static nếu có (Render-friendly)
+try {
+  const ffmpegPath = require('ffmpeg-static');
+  if (ffmpegPath && voiceLib) {
+    process.env.FFMPEG_PATH = ffmpegPath;
+    try {
+      const { generateDependencyReport } = voiceLib;
+      // optional: log report once
+    } catch (_) {}
+    console.log('✅ VoiceManager: dùng ffmpeg-static');
+  }
+} catch {
+  console.warn('⚠️ VoiceManager: không có ffmpeg-static — speak có thể cần ffmpeg hệ thống.');
 }
 
 /** guildId -> { connection, channelId } */
@@ -26,13 +40,15 @@ async function joinVoiceChannel(channel) {
     return {
       ok: false,
       message:
-        '❌ Voice chưa sẵn sàng. Trên server bot chạy:\n' +
-        '`npm i @discordjs/voice opusscript`\n' +
-        'và cài **ffmpeg** (apt/yum/binary).',
+        '❌ Voice chưa sẵn sàng. Thêm vào package.json rồi redeploy:\n' +
+        '`@discordjs/voice` · `opusscript` · `ffmpeg-static`',
     };
   }
-  if (!channel || !channel.isVoiceBased()) {
-    return { ok: false, message: '❌ Bạn cần vào một kênh voice trước, rồi dùng `/voice action:join`.' };
+  if (!channel || !channel.isVoiceBased?.()) {
+    return {
+      ok: false,
+      message: '❌ Bạn cần vào một kênh **voice** trước, rồi dùng `/voice action:join`.',
+    };
   }
 
   const { joinVoiceChannel: join, VoiceConnectionStatus, entersState } = voiceLib;
@@ -52,12 +68,23 @@ async function joinVoiceChannel(channel) {
       selfMute: false,
     });
 
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+    // Timeout 12s — caller đã deferReply
+    await entersState(connection, VoiceConnectionStatus.Ready, 12_000);
     connections.set(channel.guild.id, { connection, channelId: channel.id });
-    return { ok: true, message: `🔊 Đã vào <#${channel.id}>. Dùng \`/voice action:speak\` để đọc text.` };
+    return {
+      ok: true,
+      message: `🔊 Đã vào <#${channel.id}>. Dùng \`/voice action:speak text:...\` để đọc.`,
+    };
   } catch (e) {
     console.error('joinVoice error', e);
-    return { ok: false, message: `❌ Không join được voice: ${e.message || e}` };
+    const msg = e && e.message ? String(e.message) : String(e);
+    return {
+      ok: false,
+      message:
+        `❌ Không join được voice: ${msg.slice(0, 200)}\n` +
+        `• Kiểm tra quyền **Connect + Speak** của bot\n` +
+        `• Render free đôi khi chặn UDP voice — thử lại hoặc dùng \`/speak\` (MP3)`,
+    };
   }
 }
 
@@ -80,7 +107,10 @@ async function speakInGuild(guildId, text) {
   }
   const entry = connections.get(String(guildId));
   if (!entry?.connection) {
-    return { ok: false, message: '❌ Bot chưa join voice. Vào kênh voice rồi `/voice action:join`.' };
+    return {
+      ok: false,
+      message: '❌ Bot chưa join voice. Vào kênh voice rồi `/voice action:join`.',
+    };
   }
 
   const buf = await synthesizeSpeech(text, 'vi');
@@ -90,19 +120,24 @@ async function speakInGuild(guildId, text) {
   try {
     filePath = await writeTempMp3(buf);
     const { createAudioPlayer, createAudioResource, AudioPlayerStatus, entersState } = voiceLib;
-    const player = createAudioPlayer();
+
+    // Nếu có ffmpeg-static, createAudioResource dùng được mp3
     const resource = createAudioResource(filePath);
+    const player = createAudioPlayer();
     entry.connection.subscribe(player);
     player.play(resource);
-    await entersState(player, AudioPlayerStatus.Playing, 5_000);
-    // Không block đến hết bài — Discord giữ player
+    await entersState(player, AudioPlayerStatus.Playing, 8_000);
     player.on('error', (err) => console.warn('Audio player error', err));
     return { ok: true, message: '🗣️ Đang phát trong voice…' };
   } catch (e) {
     console.error('speakInGuild', e);
-    return { ok: false, message: `❌ Phát voice lỗi: ${e.message || e}` };
+    return {
+      ok: false,
+      message:
+        `❌ Phát voice lỗi: ${(e && e.message) || e}\n` +
+        `Thử \`/speak\` để nhận file MP3 thay thế.`,
+    };
   } finally {
-    // Xóa file sau vài giây
     if (filePath) {
       setTimeout(() => cleanupTemp(filePath), 60_000);
     }
