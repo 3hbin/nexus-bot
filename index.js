@@ -958,6 +958,13 @@ client.on('interactionCreate', async (interaction) => {
           clientUserId: client.user.id,
           userVoiceChannel: member?.voice?.channel || null,
         });
+        // Fallback MP3 khi voice UDP không Ready (Render free, v.v.)
+        if (r.mp3Buffer) {
+          const attachment = new AttachmentBuilder(r.mp3Buffer, {
+            name: 'nexus_voice_fallback.mp3',
+          });
+          return interaction.editReply({ content: r.message, files: [attachment] });
+        }
         return interaction.editReply(r.message);
       }
     }
