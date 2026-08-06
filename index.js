@@ -1185,8 +1185,18 @@ client.on('messageCreate', async (message) => {
   }
 
   const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
-  if (!prompt) {
-    try { await message.reply('Bạn cần Nexus AI hỗ trợ gì nào?'); } catch (err) {}
+
+  // Ảnh đính kèm (vision) — png/jpg/webp/gif
+  const imageAtts = Array.from(message.attachments?.values?.() || []).filter((a) => {
+    const ct = (a.contentType || '').toLowerCase();
+    const name = (a.name || '').toLowerCase();
+    return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(name);
+  });
+
+  if (!prompt && imageAtts.length === 0) {
+    try {
+      await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi chữ hoặc ảnh)');
+    } catch (err) {}
     return;
   }
 
@@ -1307,8 +1317,12 @@ client.on('messageCreate', async (message) => {
 
     const chat = userSessions.get(sessionKey);
     // Gắn gợi ý cảm xúc vào tin nhắn (không đổi systemInstruction cố định của session)
-    let messageForModel = prompt;
-    if (userEmotion && userEmotion !== 'neutral') {
+    let textPart =
+      prompt ||
+      (imageAtts.length
+        ? 'Hãy xem (các) ảnh đính kèm: mô tả nội dung, chữ trong ảnh (nếu có), và trả lời / hỗ trợ phù hợp bằng tiếng Việt.'
+        : '');
+    if (userEmotion && userEmotion !== 'neutral' && prompt) {
       const toneLine =
         userEmotion === 'sad' || userEmotion === 'lonely' || userEmotion === 'anxious'
           ? `[Cảm xúc user: ${userEmotion} — hãy đồng cảm nhẹ, giọng trấn an, vẫn trả lời đúng trọng tâm]`
@@ -1319,12 +1333,63 @@ client.on('messageCreate', async (message) => {
               : userEmotion === 'confused'
                 ? `[Cảm xúc user: confused — giải thích rõ, đơn giản]`
                 : `[Cảm xúc user: ${userEmotion} — điều chỉnh giọng cho phù hợp]`;
-      messageForModel = `${toneLine}\n\n${prompt}`;
+      textPart = `${toneLine}\n\n${prompt}`;
+    }
+
+    // Tải ảnh → base64 cho Gemini vision (tối đa 3 ảnh, mỗi ảnh ≤ 4MB)
+    const visionParts = [];
+    if (imageAtts.length > 0) {
+      const fetchFn =
+        typeof globalThis.fetch === 'function'
+          ? globalThis.fetch
+          : (() => {
+              try {
+                return require('node-fetch');
+              } catch {
+                return null;
+              }
+            })();
+      const maxImages = Math.min(3, imageAtts.length);
+      for (let i = 0; i < maxImages; i++) {
+        const att = imageAtts[i];
+        if (att.size && att.size > 4 * 1024 * 1024) {
+          console.warn('Bỏ ảnh quá lớn', att.name, att.size);
+          continue;
+        }
+        try {
+          if (!fetchFn) break;
+          const res = await fetchFn(att.url, {
+            headers: { 'User-Agent': 'NexusAI-DiscordBot/1.0' },
+          });
+          if (!res.ok) continue;
+          const arr = await res.arrayBuffer();
+          if (!arr || arr.byteLength < 32 || arr.byteLength > 4 * 1024 * 1024) continue;
+          const b64 = Buffer.from(arr).toString('base64');
+          let mime = (att.contentType || 'image/png').split(';')[0].trim();
+          if (!mime.startsWith('image/')) {
+            if (/\.png$/i.test(att.name || '')) mime = 'image/png';
+            else if (/\.webp$/i.test(att.name || '')) mime = 'image/webp';
+            else if (/\.gif$/i.test(att.name || '')) mime = 'image/gif';
+            else mime = 'image/jpeg';
+          }
+          visionParts.push({ inlineData: { mimeType: mime, data: b64 } });
+        } catch (imgErr) {
+          console.warn('Tải ảnh vision lỗi:', imgErr && imgErr.message);
+        }
+      }
+    }
+
+    // Payload multimodal: text + ảnh
+    let messagePayload;
+    if (visionParts.length > 0) {
+      messagePayload = [{ text: textPart }, ...visionParts];
+    } else {
+      messagePayload = textPart;
     }
 
     let result;
     try {
-      result = await chat.sendMessage({ message: messageForModel });
+      result = await chat.sendMessage({ message: messagePayload });
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
       userSessions.delete(sessionKey);
