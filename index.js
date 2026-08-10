@@ -329,9 +329,13 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: 'Nexus mặc định', value: 'default' },
-          { name: 'Tính trẻ trâu Việt', value: 'tre_trau' },
-          { name: 'Tính nói nhẹ nhàng', value: 'nhe_nhang' },
-          { name: 'Thích chơi Roblox', value: 'roblox' },
+          { name: 'ChatGPT (Luna)', value: 'chatgpt' },
+          { name: 'Gemini', value: 'gemini' },
+          { name: 'Claude (Nam)', value: 'claude' },
+          { name: 'Grok', value: 'grok' },
+          { name: 'Dola', value: 'dola' },
+          { name: 'Copilot', value: 'copilot' },
+          { name: 'DeepSeek (Mây)', value: 'deepseek' },
           { name: 'Tùy chỉnh (kèm mô tả)', value: 'custom' }
         )
     )
