@@ -142,37 +142,28 @@ async function setTicketPersona(channelId, personaId, customText = null) {
 }
 
 function buildPersonaSelectMenu() {
-  const menu = new StringSelectMenuBuilder()
+  // Không dùng emoji unicode — Discord option không hiện logo URL.
+  // Nếu server có custom emoji logo, gán PERSONA_PRESETS[id].emojiId = '123...'
+  const options = Object.values(PERSONA_PRESETS).map((p) => {
+    const opt = new StringSelectMenuOptionBuilder()
+      .setLabel(p.label.slice(0, 100))
+      .setDescription((p.description || p.id).slice(0, 100))
+      .setValue(p.id);
+    if (p.emojiId) {
+      opt.setEmoji({ id: String(p.emojiId) });
+    }
+    return opt;
+  });
+  options.push(
+    new StringSelectMenuOptionBuilder()
+      .setLabel('Tùy chỉnh sở thích AI')
+      .setDescription('Tự viết mô tả tính cách / sở thích')
+      .setValue('custom')
+  );
+  return new StringSelectMenuBuilder()
     .setCustomId('select_persona')
-    .setPlaceholder('Chọn tính cách / sở thích AI...')
-    .addOptions(
-      new StringSelectMenuOptionBuilder()
-        .setLabel(PERSONA_PRESETS.default.label)
-        .setDescription(PERSONA_PRESETS.default.description.slice(0, 100))
-        .setValue('default')
-        .setEmoji('🤖'),
-      new StringSelectMenuOptionBuilder()
-        .setLabel(PERSONA_PRESETS.tre_trau.label)
-        .setDescription(PERSONA_PRESETS.tre_trau.description.slice(0, 100))
-        .setValue('tre_trau')
-        .setEmoji('🔥'),
-      new StringSelectMenuOptionBuilder()
-        .setLabel(PERSONA_PRESETS.nhe_nhang.label)
-        .setDescription(PERSONA_PRESETS.nhe_nhang.description.slice(0, 100))
-        .setValue('nhe_nhang')
-        .setEmoji('🌿'),
-      new StringSelectMenuOptionBuilder()
-        .setLabel(PERSONA_PRESETS.roblox.label)
-        .setDescription(PERSONA_PRESETS.roblox.description.slice(0, 100))
-        .setValue('roblox')
-        .setEmoji('🎮'),
-      new StringSelectMenuOptionBuilder()
-        .setLabel('Tùy chỉnh sở thích AI')
-        .setDescription('Tự viết mô tả tính cách / sở thích cho AI')
-        .setValue('custom')
-        .setEmoji('✨')
-    );
-  return menu;
+    .setPlaceholder('Chọn sở thích AI (ChatGPT, Gemini, Grok…)')
+    .addOptions(options);
 }
 
 function personaLabel(personaId, customText) {
@@ -417,10 +408,19 @@ async function handleTicketInteraction(interaction) {
 
       await setTicketPersona(interaction.channelId, selected, null);
       const label = personaLabel(selected, null);
+      const preset = PERSONA_PRESETS[selected];
+      const embed = new EmbedBuilder()
+        .setTitle(`Đã chọn: ${label}`)
+        .setDescription(
+          (preset?.description || '') +
+            '\n\nTin nhắn tiếp theo dùng persona này (session tách theo model + persona).'
+        )
+        .setColor(0x5865f2);
+      if (preset?.logoUrl) {
+        embed.setThumbnail(preset.logoUrl);
+      }
       await interaction.reply({
-        content:
-          `🎭 Đã đổi tính cách AI sang **${label}**!\n` +
-          `Tin nhắn tiếp theo sẽ dùng persona này (bộ nhớ chat theo model+persona được tách riêng).`,
+        embeds: [embed],
         ephemeral: true,
       });
       return true;
