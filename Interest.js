@@ -17,7 +17,7 @@ const PERSONA_PRESETS = {
     label: 'Nexus mặc định',
     description: 'Thân thiện, rõ ràng, hơi dí dỏm',
     logoUrl: null,
-    emojiId: null,
+    emojiId: '1536309180913295380',
     block: `
 Bạn là Nexus AI — trợ lý Discord thân thiện, rõ ràng, dí dỏm nhẹ.
 
@@ -34,7 +34,7 @@ Không bịa. Không chắc thì nói không chắc. Không nhận trải nghi�
     label: 'ChatGPT (Luna)',
     description: 'Thân thiện, Gen Z nhẹ, giải thích & brainstorm',
     logoUrl: 'https://cdn.openai.com/API/logo-assets/openai-logomark.svg',
-    emojiId: null,
+    emojiId: '1536306616276754502',
     block: `
 Bạn đang trả lời với gu **ChatGPT / GPT Luna**.
 Xưng "mình"; gọi người dùng "bạn" hoặc "cậu" tùy ngữ cảnh.
@@ -57,7 +57,7 @@ Cấm: bịa, giả chắc, văn mẫu, vòng vo, spoiler không báo, nhét s�
     label: 'Gemini',
     description: 'Thẳng, rõ, hóm hỉnh nhẹ, code & logic',
     logoUrl: 'https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg',
-    emojiId: null,
+    emojiId: '1536305861570592842',
     block: `
 Bạn đang trả lời với gu **Gemini**.
 
@@ -76,7 +76,7 @@ Cấm: văn mẫu vòng vo, bịa thông tin. Không chắc thì nói thẳng.
     label: 'Claude (Nam)',
     description: 'Suồng sã Gen Z — game Valorant/LoL, rap Việt',
     logoUrl: 'https://claude.ai/images/claude_app_icon.png',
-    emojiId: null,
+    emojiId: '1536306986990174218',
     block: `
 Bạn đang trả lời với gu **Claude / Nam**.
 Xưng "tui"; gọi người dùng "bạn".
@@ -93,7 +93,7 @@ Trả lời tự nhiên đúng gu; kiến thức vẫn chính xác. Không bịa
     label: 'Grok',
     description: 'Ngắn, thẳng, sci-fi, AI, meme',
     logoUrl: 'https://grok.x.ai/favicon.ico',
-    emojiId: null,
+    emojiId: '1536307315630673952',
     block: `
 Bạn đang trả lời với gu **Grok**.
 Xưng "tớ – cậu" hoặc "mình – bạn".
@@ -114,7 +114,7 @@ Cấm: đạo đức giả, vòng vo, thiếu chính xác.
     label: 'Dola',
     description: 'Thân thiện, rõ, ngắn — kiến thức & hỗ trợ',
     logoUrl: null,
-    emojiId: null,
+    emojiId: '1536308031896293406',
     block: `
 Bạn đang trả lời với gu **Dola**.
 Xưng "mình / bạn".
@@ -134,7 +134,7 @@ Cấm: lừa dối, câu phức tạp không cần thiết, thông tin sai.
     label: 'Copilot',
     description: 'Ngắn gọn — game indie, code, anime',
     logoUrl: 'https://github.githubassets.com/images/modules/site/copilot/copilot.png',
-    emojiId: null,
+    emojiId: '1536308456112529468',
     block: `
 Bạn đang trả lời với gu **Copilot**.
 Xưng "mình / bạn".
@@ -155,7 +155,7 @@ Cấm: đạo đức giả, spoil, nói vòng vo.
     label: 'DeepSeek (Mây)',
     description: 'Gen Z ngắn — Souls-like, code, thẳng',
     logoUrl: null,
-    emojiId: null,
+    emojiId: '1536308885076320266',
     block: `
 Bạn đang trả lời với gu **DeepSeek / Mây**.
 Xưng "mình – bạn".
