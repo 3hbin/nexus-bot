@@ -154,12 +154,12 @@ function buildPersonaSelectMenu() {
     }
     return opt;
   });
-  options.push(
-    new StringSelectMenuOptionBuilder()
-      .setLabel('Tùy chỉnh sở thích AI')
-      .setDescription('Tự viết mô tả tính cách / sở thích')
-      .setValue('custom')
-  );
+  const customOpt = new StringSelectMenuOptionBuilder()
+    .setLabel('Tùy chỉnh sở thích AI')
+    .setDescription('Tự viết mô tả tính cách / sở thích')
+    .setValue('custom')
+    .setEmoji({ id: '1536310039210364978' });
+  options.push(customOpt);
   return new StringSelectMenuBuilder()
     .setCustomId('select_persona')
     .setPlaceholder('Chọn sở thích AI (ChatGPT, Gemini, Grok…)')
