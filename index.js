@@ -91,6 +91,13 @@ const {
 const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
 const { PERSONA_PRESETS } = require('./Interest.js');
 const { setAdminLogClient, adminLog } = require('./AdminLog.js');
+const {
+  loadMemory,
+  addMemory,
+  forgetMemory,
+  formatMemoryList,
+  getMemorySystemBlock,
+} = require('./Memory.js');
 const { startQuiz, tryAnswer, hasActiveQuiz } = require('./Quiz.js');
 const {
   isVoiceAvailable,
@@ -101,6 +108,8 @@ const {
 
 /** Lưu prompt gần nhất để nút Regenerate — key: userId_channelId */
 const lastPrompts = new Map();
+/** key -> { text, userId, at } for translate / feedback */
+const lastReplies = new Map();
 
 // ==========================================
 // CONFIG & INIT
@@ -418,6 +427,15 @@ const commands = [
       opt.setName('note').setDescription('Nội dung nhắc').setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName('ask')
+    .setDescription('Hỏi AI 1 phát (ephemeral, không lưu history)')
+    .addStringOption((opt) =>
+      opt.setName('question').setDescription('Câu hỏi').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('export')
+    .setDescription('Xuất hội thoại gần đây trong kênh/ticket ra file .txt'),
+  new SlashCommandBuilder()
     .setName('ship')
     .setDescription('Chấm “độ hợp” vibe giữa 2 người (meme)')
     .addUserOption((opt) => opt.setName('user1').setDescription('Người 1').setRequired(true))
@@ -497,6 +515,56 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   try {
     // Nút xóa memory ticket
+
+    // Nút feedback 👍 / 👎
+    if (interaction.isButton() && interaction.customId.startsWith('nexus_fb:')) {
+      const parts = interaction.customId.split(':'); // nexus_fb:up|down:key
+      const vote = parts[1];
+      const key = parts.slice(2).join(':');
+      const stored = lastReplies.get(key);
+      await interaction.reply({
+        content: vote === 'up' ? '👍 Cảm ơn feedback!' : '👎 Đã ghi nhận — sẽ cố cải thiện.',
+        ephemeral: true,
+      }).catch(() => {});
+      adminLog({
+        title: vote === 'up' ? '👍 Feedback tốt' : '👎 Feedback xấu',
+        description: (stored?.text || '(không có text)').slice(0, 500),
+        color: vote === 'up' ? 0x57f287 : 0xed4245,
+        fields: [
+          { name: 'User', value: `${interaction.user.tag}`, inline: true },
+          { name: 'Channel', value: `<#${interaction.channelId}>`, inline: true },
+        ],
+      }).catch(() => {});
+      return;
+    }
+
+    // Nút Dịch câu trả lời AI
+    if (interaction.isButton() && interaction.customId.startsWith('nexus_tr:')) {
+      const key = interaction.customId.slice('nexus_tr:'.length);
+      const stored = lastReplies.get(key);
+      if (!stored?.text) {
+        return interaction.reply({ content: '❌ Không tìm thấy nội dung để dịch (hết hạn).', ephemeral: true });
+      }
+      if (!aiInstance) {
+        return interaction.reply({ content: '❌ Chưa có GEMINI_API_KEY.', ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const chat = aiInstance.chats.create({
+          model: DEFAULT_MODEL,
+          config: {
+            maxOutputTokens: 1024,
+            systemInstruction:
+              'Bạn là dịch giả. Input tiếng Việt → English. Input English → tiếng Việt. Chỉ trả bản dịch, giữ ý.',
+          },
+        });
+        const r = await chat.sendMessage({ message: stored.text.slice(0, 3000) });
+        return interaction.editReply(`🌐 ${(r?.text || '…').slice(0, 1900)}`);
+      } catch (e) {
+        return interaction.editReply('❌ Không dịch được.');
+      }
+    }
+
     if (interaction.isButton() && interaction.customId === 'nexus_clear_memory') {
       const ticketInfo = getTicketByChannel(interaction.channelId);
       if (!ticketInfo) {
@@ -571,6 +639,7 @@ client.on('interactionCreate', async (interaction) => {
         if (ticketData?.contextNote) {
           systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket]\n${ticketData.contextNote}`;
         }
+        systemInstruction += getMemorySystemBlock(interaction.user.id);
 
         const personaKeyPart =
           selectedPersona === 'custom'
@@ -973,6 +1042,63 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+
+    if (commandName === 'ask') {
+      const question = interaction.options.getString('question');
+      if (!aiInstance) {
+        return interaction.reply({ content: '❌ Bot chưa có GEMINI_API_KEY.', ephemeral: true });
+      }
+      const q = checkQuota(interaction.user.id, 'chat');
+      if (!q.allowed) return interaction.reply({ content: q.message, ephemeral: true });
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        let systemInstruction = getSystemInstructionForPersona(
+          SYSTEM_INSTRUCTION,
+          getUserPrefs(interaction.user.id).selectedPersona || DEFAULT_PERSONA_ID,
+          getUserPrefs(interaction.user.id).customPersonaText || null
+        );
+        systemInstruction += getMemorySystemBlock(interaction.user.id);
+        const chat = aiInstance.chats.create({
+          model: DEFAULT_MODEL,
+          config: { systemInstruction, maxOutputTokens: 768 },
+        });
+        const result = await chat.sendMessage({ message: question });
+        consumeQuota(interaction.user.id, 'chat');
+        const warn = maybeWarn(interaction.user.id, 'chat');
+        let text = (result?.text || '…').slice(0, 1900);
+        if (warn) text += '\n\n' + warn;
+        return interaction.editReply(text);
+      } catch (e) {
+        console.error('ask error', e);
+        return interaction.editReply('❌ Không trả lời được.');
+      }
+    }
+
+    if (commandName === 'export') {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const msgs = await interaction.channel.messages.fetch({ limit: 50 });
+        const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+        const lines = sorted.map((m) => {
+          const ts = new Date(m.createdTimestamp).toISOString();
+          const who = m.author.bot ? `[BOT] ${m.author.username}` : m.author.username;
+          return `[${ts}] ${who}: ${m.content || '(embed/file)'}`;
+        });
+        const body = lines.join('\n').slice(0, 180000);
+        const buf = Buffer.from(body || '(trống)', 'utf8');
+        const attachment = new AttachmentBuilder(buf, {
+          name: `nexus-export-${interaction.channelId}.txt`,
+        });
+        return interaction.editReply({
+          content: `📤 Đã xuất **${sorted.length}** tin nhắn gần nhất.`,
+          files: [attachment],
+        });
+      } catch (e) {
+        console.error('export error', e);
+        return interaction.editReply('❌ Không xuất được hội thoại.');
+      }
+    }
+
     if (commandName === 'summary') {
       if (!aiInstance) {
         return interaction.reply({ content: '❌ Bot chưa có GEMINI_API_KEY.', ephemeral: true });
@@ -1107,6 +1233,23 @@ client.on('messageCreate', async (message) => {
     return message.channel.send('🔑 **Đã lưu Key Gemini thành công!** (Tin nhắn chứa Key đã được tự động xóa).');
   }
 
+
+  // Ghi nhớ dài hạn
+  const rawContent = message.content.trim();
+  if (/^remember\s*:/i.test(rawContent)) {
+    const body = rawContent.replace(/^remember\s*:/i, '').trim();
+    const r = addMemory(message.author.id, body);
+    return message.reply(r.message).catch(() => {});
+  }
+  if (/^forget\s*:/i.test(rawContent)) {
+    const body = rawContent.replace(/^forget\s*:/i, '').trim();
+    const r = forgetMemory(message.author.id, body);
+    return message.reply(r.message).catch(() => {});
+  }
+  if (/^(memory|memories|bộ nhớ|bo nho)\s*$/i.test(rawContent)) {
+    return message.reply(formatMemoryList(message.author.id)).catch(() => {});
+  }
+
   // Ghim ngữ cảnh ticket: note: ...
   if (ticketData && /^note\s*:/i.test(message.content.trim())) {
     const noteText = message.content.replace(/^note\s*:/i, '').trim();
@@ -1232,6 +1375,7 @@ client.on('messageCreate', async (message) => {
         replyText: quickReply,
         getGifForEmotion,
         getGifByKeyword,
+        channelId: message.channel.id,
       });
     } catch (_) {}
     const embeds = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
@@ -1304,6 +1448,7 @@ client.on('messageCreate', async (message) => {
       if (ticketData?.contextNote) {
         systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
       }
+      systemInstruction += getMemorySystemBlock(message.author.id);
       const chatSession = activeAi.chats.create({
         model: selectedModel,
         history: restoredHistory,
@@ -1467,6 +1612,7 @@ client.on('messageCreate', async (message) => {
         replyText,
         getGifForEmotion,
         getGifByKeyword,
+        channelId: message.channel.id,
       });
     } catch (e) {
       console.warn('❌ Lỗi khi tìm GIF cảm xúc:', e);
@@ -1493,12 +1639,28 @@ client.on('messageCreate', async (message) => {
     // Lưu prompt + nút Regenerate
     const regenKey = `${message.author.id}_${message.channel.id}`;
     lastPrompts.set(regenKey, { prompt, userId: message.author.id, at: Date.now() });
+    lastReplies.set(regenKey, { text: replyText, userId: message.author.id, at: Date.now() });
     const regenRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`nexus_regen:${regenKey}`)
         .setLabel('Trả lời lại')
         .setStyle(ButtonStyle.Secondary)
-        .setEmoji('🔄')
+        .setEmoji('🔄'),
+      new ButtonBuilder()
+        .setCustomId(`nexus_tr:${regenKey}`)
+        .setLabel('Dịch')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🌐'),
+      new ButtonBuilder()
+        .setCustomId(`nexus_fb:up:${regenKey}`)
+        .setLabel('Tốt')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('👍'),
+      new ButtonBuilder()
+        .setCustomId(`nexus_fb:down:${regenKey}`)
+        .setLabel('Chưa ổn')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('👎')
     );
 
     let textOut = replyText;
@@ -1564,6 +1726,7 @@ client.on('messageCreate', async (message) => {
     await loadQuota().catch((e) => console.error('Lỗi load quota:', e));
     await loadGeminiLock().catch((e) => console.error('Lỗi load geminiLock:', e));
     await loadUserPrefs().catch((e) => console.error('Lỗi load userPrefs:', e));
+    await loadMemory().catch((e) => console.error('Lỗi load memory:', e));
 
     if (DISCORD_TOKEN) {
       await client.login(DISCORD_TOKEN);
