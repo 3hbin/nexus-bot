@@ -613,8 +613,18 @@ client.once('ready', async () => {
   console.log(`✅ Bot ${client.user.tag} đã online!`);
   try {
     console.log('🔄 Đang đăng ký Slash Commands lên Discord...');
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('🎉 Đã đăng ký Slash Commands thành công!');
+    const body = commands.map((c) => c.toJSON());
+    // Guild = hiện ngay; Global có thể trễ tới 1h
+    for (const [gid, guild] of client.guilds.cache) {
+      try {
+        await rest.put(Routes.applicationGuildCommands(client.user.id, gid), { body });
+        console.log(`🎉 Slash commands (guild) → ${guild.name}`);
+      } catch (ge) {
+        console.warn('Guild commands fail', gid, ge && ge.message);
+      }
+    }
+    await rest.put(Routes.applicationCommands(client.user.id), { body });
+    console.log('🎉 Đã đăng ký Slash Commands (global + guild)!');
   } catch (error) {
     console.error('❌ Lỗi khi đăng ký Slash Commands:', error);
   }
@@ -802,7 +812,7 @@ client.on('interactionCreate', async (interaction) => {
             history: restoredHistory,
             config: {
               systemInstruction,
-              maxOutputTokens: 1024,
+              maxOutputTokens: 8192,
               thinkingConfig: { thinkingLevel: 'medium' },
             },
           });
@@ -1646,16 +1656,15 @@ client.on('messageCreate', async (message) => {
         systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
       }
       systemInstruction += getMemorySystemBlock(message.author.id);
-      if (ticketData) {
-        systemInstruction +=
-          '\n\n[Ticket code policy] Khi viết code dài (>~40 dòng hoặc nhiều file), viết tóm tắt + code mẫu ngắn; phần còn lại user sẽ nhận file đính kèm. Không paste hàng trăm dòng vào chat.';
-      }
+      systemInstruction +=
+        '\n\n[Code policy] Khi user xin code dài/full project: (1) tóm tắt cấu trúc ngắn, (2) mỗi file bọc trong code fence ```lang với nội dung đủ dài — hệ thống đổi thành LINK paste. Không dừng giữa chừng. Ưu tiên đầy đủ trong fence.';
+
       const chatSession = activeAi.chats.create({
         model: selectedModel,
         history: restoredHistory,
         config: {
           systemInstruction,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 8192,
           thinkingConfig: { thinkingLevel: 'medium' },
         },
       });
