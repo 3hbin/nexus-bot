@@ -111,6 +111,154 @@ const lastPrompts = new Map();
 /** key -> { text, userId, at } for translate / feedback */
 const lastReplies = new Map();
 
+/** Bỏ URL media (Giphy/Tenor/…) khỏi text AI — tránh hiện link xấu; GIF chỉ qua embed */
+
+
+
+
+/** Tách text dài thành nhiều phần ≤ maxLen, ưu tiên xuống dòng / câu */
+function splitLongMessage(text, maxLen = 1900) {
+  const src = String(text || '');
+  if (src.length <= maxLen) return [src];
+  const chunks = [];
+  let rest = src;
+  while (rest.length > maxLen) {
+    let cut = rest.lastIndexOf('\n\n', maxLen);
+    if (cut < maxLen * 0.4) cut = rest.lastIndexOf('\n', maxLen);
+    if (cut < maxLen * 0.4) cut = rest.lastIndexOf('. ', maxLen);
+    if (cut < maxLen * 0.4) cut = rest.lastIndexOf(' ', maxLen);
+    if (cut < maxLen * 0.3) cut = maxLen;
+    chunks.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).replace(/^\s+/, '');
+  }
+  if (rest.length) chunks.push(rest);
+  return chunks.filter(Boolean);
+}
+
+/** Đăng code dài lên paste (link) — không bắt tải file. */
+async function pasteCodeOnline(code, lang) {
+  const body = String(code || '');
+  if (!body.trim()) return null;
+  const fetchFn = globalThis.fetch;
+  if (!fetchFn) return null;
+
+  try {
+    const res = await fetchFn('https://paste.rs/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      body,
+    });
+    if (res.ok) {
+      const url = (await res.text()).trim();
+      if (/^https?:\/\//i.test(url)) return url.split(/\s+/)[0];
+    }
+  } catch (e) {
+    console.warn('paste.rs fail', e && e.message);
+  }
+
+  try {
+    const params = new URLSearchParams();
+    params.set('content', body.slice(0, 250000));
+    params.set('syntax', lang || 'text');
+    params.set('expiry_days', '7');
+    const res = await fetchFn('https://dpaste.com/api/v2/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'NexusAI-DiscordBot',
+      },
+      body: params.toString(),
+    });
+    if (res.ok) {
+      const url = (await res.text()).trim();
+      if (/^https?:\/\//i.test(url)) return url.split(/\s+/)[0];
+    }
+  } catch (e) {
+    console.warn('dpaste fail', e && e.message);
+  }
+
+  return null;
+}
+
+/** Code dài → link paste (ưu tiên) hoặc file (fallback). */
+async function extractLongCodeToFiles(text, maxInline = 900) {
+  const files = [];
+  if (!text) return { text: text || '', files };
+
+  let idx = 0;
+  const parts = [];
+  const re = /```([\w.+-]*)\n([\s\S]*?)```/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    parts.push(text.slice(last, m.index));
+    const lang = m[1] || '';
+    const body = (m[2] || '').replace(/\s+$/, '');
+    if (body.length < maxInline) {
+      parts.push(m[0]);
+    } else {
+      idx += 1;
+      const url = await pasteCodeOnline(body, lang || 'text');
+      if (url) {
+        parts.push(
+          `📦 **Code #${idx}** (${lang || 'text'}, ${body.length} ký tự) — mở link (không cần tải file):\n${url}`
+        );
+      } else {
+        const extMap = {
+          js: 'js',
+          javascript: 'js',
+          ts: 'ts',
+          python: 'py',
+          py: 'py',
+          json: 'json',
+          html: 'html',
+          css: 'css',
+          sh: 'sh',
+          bash: 'sh',
+          txt: 'txt',
+        };
+        const ext = extMap[String(lang).toLowerCase()] || 'txt';
+        const name = `nexus-code-${idx}.${ext}`;
+        files.push(new AttachmentBuilder(Buffer.from(body, 'utf8'), { name }));
+        parts.push(`📦 **Code #${idx}** — paste lỗi, gửi file **${name}** (fallback).`);
+      }
+    }
+    last = m.index + m[0].length;
+  }
+  parts.push(text.slice(last));
+  let out = parts.join('');
+
+  if (!idx && out.length > 3500) {
+    const url = await pasteCodeOnline(out, 'text');
+    if (url) {
+      return {
+        text: `📦 Nội dung dài — xem full tại:\n${url}\n\n_Tóm tắt:_\n${out.slice(0, 400)}…`,
+        files: [],
+      };
+    }
+    files.push(new AttachmentBuilder(Buffer.from(out, 'utf8'), { name: 'nexus-reply-full.txt' }));
+    return {
+      text: `📦 Nội dung dài — file **nexus-reply-full.txt** (paste lỗi).\n${out.slice(0, 400)}…`,
+      files,
+    };
+  }
+  return { text: out, files };
+}
+
+function stripMediaUrls(text) {
+  if (!text) return text;
+  return String(text)
+    .replace(/https?:\/\/(?:media\.)?giphy\.com\/\S+/gi, '')
+    .replace(/https?:\/\/(?:media\.)?tenor\.com\/\S+/gi, '')
+    .replace(/https?:\/\/i\.imgur\.com\/\S+/gi, '')
+    .replace(/https?:\/\/c\.tenor\.com\/\S+/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+$/gm, '')
+    .trim();
+}
+
+
+
 // ==========================================
 // CONFIG & INIT
 // ==========================================
@@ -275,6 +423,7 @@ async function loadAllowedChannelsFromFile() {
 // ==========================================
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ kết nối của Bot'),
+  new SlashCommandBuilder().setName('help').setDescription('Xem hướng dẫn lệnh & tính năng Nexus AI'),
   new SlashCommandBuilder().setName('reset').setDescription('Xóa lịch sử trò chuyện cá nhân với Nexus AI'),
   new SlashCommandBuilder()
     .setName('setchannel')
@@ -715,6 +864,54 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName, user, guildId, channelId } = interaction;
+
+
+    if (commandName === 'help') {
+      const embed = new EmbedBuilder()
+        .setTitle('📖 Nexus AI — Hướng dẫn')
+        .setColor(0x5865f2)
+        .setDescription(
+          'Chat trong **kênh AI** / **ticket** / **mention bot**. Ticket: chọn model + persona, có thể `key:` API riêng.'
+        )
+        .addFields(
+          {
+            name: '🤖 Chat & AI',
+            value:
+              '`/ask` — hỏi 1 phát (riêng tư)\n' +
+              '`/persona` — đổi tính cách AI\n' +
+              '`/summary` — tóm tắt kênh\n' +
+              '`/imagine` · `/video` — tạo media\n' +
+              '`/mode` · `/tts` · `/speak` · `/quota`',
+            inline: false,
+          },
+          {
+            name: '🎫 Ticket & bộ nhớ',
+            value:
+              '`setup_ticketai` (Admin)\n' +
+              '`note: ...` — ghim ngữ cảnh ticket\n' +
+              '`remember:` · `memory` · `forget:` — nhớ lâu dài\n' +
+              'Code **dài** → bot gửi **link paste** (mở web, không cần tải file)',
+            inline: false,
+          },
+          {
+            name: '🛠️ Tiện ích',
+            value:
+              '`/dich` · `dịch: ...` — dịch VI↔EN\n' +
+              '`/export` — xuất chat .txt\n' +
+              '`/quiz` · `/ship` · `/remind`\n' +
+              '`/voice` · `/ping` · `/reset`\n' +
+              'Nút: Trả lời lại · Dịch · 👍/👎',
+            inline: false,
+          },
+          {
+            name: '📎 Ảnh',
+            value: 'Gửi ảnh trong ticket/kênh AI để bot **xem & mô tả** (Gemini Vision).',
+            inline: false,
+          }
+        )
+        .setFooter({ text: 'Nexus AI' });
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
 
     if (commandName === 'ping') {
       const sent = await interaction.reply({ content: '🏓 Ping...', fetchReply: true });
@@ -1449,6 +1646,10 @@ client.on('messageCreate', async (message) => {
         systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
       }
       systemInstruction += getMemorySystemBlock(message.author.id);
+      if (ticketData) {
+        systemInstruction +=
+          '\n\n[Ticket code policy] Khi viết code dài (>~40 dòng hoặc nhiều file), viết tóm tắt + code mẫu ngắn; phần còn lại user sẽ nhận file đính kèm. Không paste hàng trăm dòng vào chat.';
+      }
       const chatSession = activeAi.chats.create({
         model: selectedModel,
         history: restoredHistory,
@@ -1584,6 +1785,9 @@ client.on('messageCreate', async (message) => {
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
+    replyText = stripMediaUrls(replyText);
+    // Nếu model chỉ trả URL gif, giữ câu ngắn
+    if (!replyText) replyText = 'Đây nhé!';
 
     // API OK → bỏ khóa Gemini nếu còn (ví dụ vừa sang ngày mới / đổi key)
     clearGeminiLock().catch(() => {});
@@ -1632,9 +1836,15 @@ client.on('messageCreate', async (message) => {
       }
     }
 
+    // Code dài → file đính kèm (Discord CDN = link tải)
+    const codePack = await extractLongCodeToFiles(replyText, message.channel?.name?.startsWith('ticket') ? 700 : 900);
+    replyText = codePack.text;
+
     const DISCORD_MAX = 2000;
     const gifEmbed = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
-    const files = ttsAttachment ? [ttsAttachment] : [];
+    const files = [];
+    if (ttsAttachment) files.push(ttsAttachment);
+    if (codePack.files && codePack.files.length) files.push(...codePack.files);
 
     // Lưu prompt + nút Regenerate
     const regenKey = `${message.author.id}_${message.channel.id}`;
@@ -1666,35 +1876,38 @@ client.on('messageCreate', async (message) => {
     let textOut = replyText;
     if (quotaWarn) textOut = `${replyText}\n\n${quotaWarn}`;
 
-    if (textOut.length > DISCORD_MAX) {
-      const safeChunkSize = 1900;
-      const chunks = textOut.match(new RegExp(`([\\s\\S]{1,${safeChunkSize}})`, 'g')) || [];
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const isLast = i === chunks.length - 1;
-        await message
-          .reply({
-            content: chunk,
-            embeds: isLast ? gifEmbed : [],
-            files: isLast ? files : [],
-            components: isLast ? [regenRow] : [],
-          })
-          .catch(() => {});
-      }
-    } else {
-      const sent = await message
-        .reply({ content: textOut, embeds: gifEmbed, files, components: [regenRow] })
-        .catch(async () => {
-          return message.reply(textOut).catch(() => null);
-        });
-      // Reaction theo emotion (9)
+    const chunks = splitLongMessage(textOut, 1900);
+    let firstSent = null;
+    for (let i = 0; i < chunks.length; i++) {
+      const isFirst = i === 0;
+      const isLast = i === chunks.length - 1;
+      const prefix = chunks.length > 1 ? `**(${i + 1}/${chunks.length})**\n` : '';
+      const payload = {
+        content: (prefix + chunks[i]).slice(0, 2000),
+        embeds: isLast ? gifEmbed : [],
+        files: isLast ? files : [],
+        components: isLast ? [regenRow] : [],
+      };
       try {
-        const reactEmoji = EMOTION_REACTIONS[userEmotion];
-        if (reactEmoji && sent && typeof sent.react === 'function') {
-          await sent.react(reactEmoji).catch(() => {});
+        if (isFirst) {
+          firstSent = await message.reply(payload);
+        } else {
+          await message.channel.send(payload);
         }
-      } catch (_) {}
+      } catch (sendErr) {
+        console.warn('split send', sendErr && sendErr.message);
+        try {
+          if (isFirst) firstSent = await message.reply({ content: payload.content });
+          else await message.channel.send({ content: payload.content });
+        } catch (_) {}
+      }
     }
+    try {
+      const reactEmoji = EMOTION_REACTIONS[userEmotion];
+      if (reactEmoji && firstSent && typeof firstSent.react === 'function') {
+        await firstSent.react(reactEmoji).catch(() => {});
+      }
+    } catch (_) {}
   } catch (error) {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
     await message.reply('❌ Đã có lỗi xảy ra khi xử lý yêu cầu của bạn. Hãy thử lại hoặc dùng `/reset`.').catch(() => {});
