@@ -161,6 +161,42 @@ function buildHelpEmbed() {
     .setFooter({ text: 'Nexus AI' });
 }
 
+
+async function translateTextFull(ai, text) {
+  const chat = ai.chats.create({
+    model: DEFAULT_MODEL,
+    config: {
+      maxOutputTokens: 8192,
+      systemInstruction:
+        'Bạn là dịch giả chuyên nghiệp. ' +
+        'Nếu input chủ yếu tiếng Việt → dịch sang English. ' +
+        'Nếu chủ yếu English → dịch sang tiếng Việt. ' +
+        'Dịch ĐỦ toàn bộ nội dung, không tóm tắt, không cắt bớt, không bỏ đoạn. ' +
+        'Giữ heading/emoji nếu có. Chỉ trả bản dịch, không giải thích thêm.',
+    },
+  });
+  const result = await chat.sendMessage({ message: String(text || '').slice(0, 12000) });
+  return (result?.text || '').trim() || '…';
+}
+
+/** Gửi bản dịch dài: tin đầu + follow-up / channel messages */
+async function sendLongTranslation(interactionOrMessage, translated, { ephemeral = false } = {}) {
+  const chunks = splitLongMessage(`🌐 **Bản dịch**\n${translated}`, 1900);
+  if (interactionOrMessage.editReply && interactionOrMessage.followUp) {
+    // Discord interaction
+    await interactionOrMessage.editReply({ content: chunks[0] });
+    for (let i = 1; i < chunks.length; i++) {
+      await interactionOrMessage.followUp({ content: chunks[i], ephemeral }).catch(() => {});
+    }
+    return;
+  }
+  // message
+  await interactionOrMessage.reply({ content: chunks[0] });
+  for (let i = 1; i < chunks.length; i++) {
+    await interactionOrMessage.channel.send({ content: chunks[i] }).catch(() => {});
+  }
+}
+
 function splitLongMessage(text, maxLen = 1900) {
   const src = String(text || '');
   if (src.length <= maxLen) return [src];
@@ -753,17 +789,10 @@ client.on('interactionCreate', async (interaction) => {
       }
       await interaction.deferReply({ ephemeral: true });
       try {
-        const chat = aiInstance.chats.create({
-          model: DEFAULT_MODEL,
-          config: {
-            maxOutputTokens: 1024,
-            systemInstruction:
-              'Bạn là dịch giả. Input tiếng Việt → English. Input English → tiếng Việt. Chỉ trả bản dịch, giữ ý.',
-          },
-        });
-        const r = await chat.sendMessage({ message: stored.text.slice(0, 3000) });
-        return interaction.editReply(`🌐 ${(r?.text || '…').slice(0, 1900)}`);
+        const translated = await translateTextFull(aiInstance, stored.text);
+        return await sendLongTranslation(interaction, translated, { ephemeral: true });
       } catch (e) {
+        console.error('translate btn', e);
         return interaction.editReply('❌ Không dịch được.');
       }
     }
@@ -1349,16 +1378,8 @@ client.on('interactionCreate', async (interaction) => {
       const text = interaction.options.getString('text');
       await interaction.deferReply();
       try {
-        const chat = aiInstance.chats.create({
-          model: DEFAULT_MODEL,
-          config: {
-            maxOutputTokens: 512,
-            systemInstruction:
-              'Bạn là dịch giả. Nếu input chủ yếu tiếng Việt → dịch sang English. Nếu chủ yếu English → dịch sang tiếng Việt. Chỉ trả bản dịch, không giải thích.',
-          },
-        });
-        const result = await chat.sendMessage({ message: text });
-        return interaction.editReply(`🌐 **Bản dịch**\n${(result?.text || '…').slice(0, 1900)}`);
+        const translated = await translateTextFull(aiInstance, text);
+        return await sendLongTranslation(interaction, translated, { ephemeral: false });
       } catch (e) {
         console.error('dich error', e);
         return interaction.editReply('❌ Không dịch được (quota/API).');
@@ -1485,16 +1506,13 @@ client.on('messageCreate', async (message) => {
     }
     try {
       await message.channel.sendTyping().catch(() => {});
-      const chat = aiInstance.chats.create({
-        model: DEFAULT_MODEL,
-        config: {
-          maxOutputTokens: 512,
-          systemInstruction:
-            'Bạn là dịch giả. Input tiếng Việt → English. Input English → tiếng Việt. Chỉ trả bản dịch.',
-        },
-      });
-      const result = await chat.sendMessage({ message: text });
-      return message.reply(`🌐 ${(result?.text || '…').slice(0, 1900)}`).catch(() => {});
+      const translated = await translateTextFull(aiInstance, text);
+      const chunks = splitLongMessage(`🌐 **Bản dịch**\n${translated}`, 1900);
+      await message.reply({ content: chunks[0] }).catch(() => {});
+      for (let i = 1; i < chunks.length; i++) {
+        await message.channel.send({ content: chunks[i] }).catch(() => {});
+      }
+      return;
     } catch (e) {
       return message.reply('❌ Không dịch được.').catch(() => {});
     }
