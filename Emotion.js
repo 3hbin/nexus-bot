@@ -245,48 +245,38 @@ function tryQuickEmotionalReply(prompt, emotionId) {
  * @param {function} opts.getGifForEmotion - từ GifSearch
  * @param {function} opts.getGifByKeyword - từ GifSearch
  */
-async function resolveEmotionalGif({ userEmotion, replyText, getGifForEmotion, getGifByKeyword }) {
-  let gifUrl = null;
+/** channelId -> last gif timestamp — chống spam GIF */
+const lastGifAt = new Map();
+const GIF_COOLDOWN_MS = 3 * 60 * 1000; // 3 phút / kênh
+const GIF_CHANCE = 0.22; // ~22% khi đủ điều kiện cảm xúc mạnh
 
-  // 1) GIF theo cảm xúc user
-  if (userEmotion && userEmotion !== 'neutral') {
-    try {
-      gifUrl = await getGifForEmotion(userEmotion);
-    } catch (_) {}
-    if (!gifUrl) {
-      const kw = getGifKeywordForEmotion(userEmotion);
-      if (kw) {
-        try {
-          gifUrl = await getGifByKeyword(kw);
-        } catch (_) {}
-      }
-    }
+async function resolveEmotionalGif({ userEmotion, replyText, getGifForEmotion, getGifByKeyword, channelId }) {
+  // Chỉ GIF khi cảm xúc user rõ (không neutral) + random + cooldown kênh
+  const strong = userEmotion && userEmotion !== 'neutral';
+  if (!strong) return null;
+  if (Math.random() > GIF_CHANCE) return null;
+
+  const cid = channelId ? String(channelId) : null;
+  if (cid) {
+    const last = lastGifAt.get(cid) || 0;
+    if (Date.now() - last < GIF_COOLDOWN_MS) return null;
   }
 
-  // 2) GIF theo cảm xúc trong câu trả lời bot
-  if (!gifUrl && replyText) {
-    const replyEmotion = detectEmotion(replyText);
-    if (replyEmotion) {
+  let gifUrl = null;
+  try {
+    gifUrl = await getGifForEmotion(userEmotion);
+  } catch (_) {}
+  if (!gifUrl) {
+    const kw = getGifKeywordForEmotion(userEmotion);
+    if (kw) {
       try {
-        gifUrl = await getGifForEmotion(replyEmotion);
+        gifUrl = await getGifByKeyword(kw);
       } catch (_) {}
     }
   }
+  // Không fallback keyword tiếng Anh từ reply (dễ spam GIF lệch)
 
-  // 3) Keyword tiếng Anh từ reply
-  if (!gifUrl && replyText) {
-    try {
-      const words = replyText
-        .replace(/[^A-Za-z0-9\s]/g, ' ')
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length > 3);
-      const unique = Array.from(new Set(words));
-      const keywords = unique.slice(0, 2).join(' ');
-      if (keywords) gifUrl = await getGifByKeyword(keywords);
-    } catch (_) {}
-  }
-
+  if (gifUrl && cid) lastGifAt.set(cid, Date.now());
   return gifUrl;
 }
 
