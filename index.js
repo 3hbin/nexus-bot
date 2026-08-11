@@ -117,6 +117,50 @@ const lastReplies = new Map();
 
 
 /** Tách text dài thành nhiều phần ≤ maxLen, ưu tiên xuống dòng / câu */
+
+function buildHelpEmbed() {
+  return new EmbedBuilder()
+    .setTitle('📖 Nexus AI — Hướng dẫn')
+    .setColor(0x5865f2)
+    .setDescription(
+      'Chat trong **kênh AI** / **ticket** / **mention bot**. Ticket: chọn model + persona, có thể `key:` API riêng.'
+    )
+    .addFields(
+      {
+        name: '🤖 Chat & AI',
+        value:
+          '`/ask` — hỏi 1 phát (riêng tư)\n' +
+          '`/persona` — đổi tính cách AI\n' +
+          '`/summary` — tóm tắt kênh\n' +
+          '`/imagine` · `/video` — tạo media\n' +
+          '`/mode` · `/tts` · `/speak` · `/quota`',
+      },
+      {
+        name: '🎫 Ticket & bộ nhớ',
+        value:
+          '`setup_ticketai` (Admin)\n' +
+          '`note: ...` — ghim ngữ cảnh ticket\n' +
+          '`remember:` · `memory` · `forget:` — nhớ lâu dài\n' +
+          'Code dài → **link paste** (không cần tải file)',
+      },
+      {
+        name: '🛠️ Tiện ích',
+        value:
+          '`/dich` · `dịch: ...` — dịch VI↔EN\n' +
+          '`/export` — xuất chat .txt\n' +
+          '`/quiz` · `/ship` · `/remind`\n' +
+          '`/voice` · `/ping` · `/reset`\n' +
+          'Nút: Trả lời lại · Dịch · 👍/👎\n' +
+          'Gõ `help` hoặc `!help` cũng xem được hướng dẫn này',
+      },
+      {
+        name: '📎 Ảnh',
+        value: 'Gửi ảnh trong ticket/kênh AI để bot **xem & mô tả** (Gemini Vision).',
+      }
+    )
+    .setFooter({ text: 'Nexus AI' });
+}
+
 function splitLongMessage(text, maxLen = 1900) {
   const src = String(text || '');
   if (src.length <= maxLen) return [src];
@@ -877,50 +921,7 @@ client.on('interactionCreate', async (interaction) => {
 
 
     if (commandName === 'help') {
-      const embed = new EmbedBuilder()
-        .setTitle('📖 Nexus AI — Hướng dẫn')
-        .setColor(0x5865f2)
-        .setDescription(
-          'Chat trong **kênh AI** / **ticket** / **mention bot**. Ticket: chọn model + persona, có thể `key:` API riêng.'
-        )
-        .addFields(
-          {
-            name: '🤖 Chat & AI',
-            value:
-              '`/ask` — hỏi 1 phát (riêng tư)\n' +
-              '`/persona` — đổi tính cách AI\n' +
-              '`/summary` — tóm tắt kênh\n' +
-              '`/imagine` · `/video` — tạo media\n' +
-              '`/mode` · `/tts` · `/speak` · `/quota`',
-            inline: false,
-          },
-          {
-            name: '🎫 Ticket & bộ nhớ',
-            value:
-              '`setup_ticketai` (Admin)\n' +
-              '`note: ...` — ghim ngữ cảnh ticket\n' +
-              '`remember:` · `memory` · `forget:` — nhớ lâu dài\n' +
-              'Code **dài** → bot gửi **link paste** (mở web, không cần tải file)',
-            inline: false,
-          },
-          {
-            name: '🛠️ Tiện ích',
-            value:
-              '`/dich` · `dịch: ...` — dịch VI↔EN\n' +
-              '`/export` — xuất chat .txt\n' +
-              '`/quiz` · `/ship` · `/remind`\n' +
-              '`/voice` · `/ping` · `/reset`\n' +
-              'Nút: Trả lời lại · Dịch · 👍/👎',
-            inline: false,
-          },
-          {
-            name: '📎 Ảnh',
-            value: 'Gửi ảnh trong ticket/kênh AI để bot **xem & mô tả** (Gemini Vision).',
-            inline: false,
-          }
-        )
-        .setFooter({ text: 'Nexus AI' });
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [buildHelpEmbed()], ephemeral: true });
     }
 
     if (commandName === 'ping') {
@@ -1429,6 +1430,12 @@ client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
   const ticketData = getTicketByChannel(message.channel.id);
+
+  // Help dạng tin nhắn (không cần slash menu)
+  const helpText = message.content.replace(/<@!?\d+>/g, '').trim();
+  if (/^(?:!\/?|\/)?help$/i.test(helpText) || /^(?:trợ giúp|huong dan|hướng dẫn)$/i.test(helpText)) {
+    return message.reply({ embeds: [buildHelpEmbed()] }).catch(() => {});
+  }
 
   if (ticketData && message.content.trim().toLowerCase().startsWith('key:')) {
     const apiKey = message.content.replace(/key:/i, '').trim();
