@@ -636,6 +636,17 @@ const commands = [
       opt.setName('text').setDescription('Nội dung khi action=speak').setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName('voicechat')
+    .setDescription('Bật/tắt bot đọc to câu trả lời (chat thoại)')
+    .addStringOption((opt) =>
+      opt
+        .setName('mode')
+        .setDescription('on hoặc off')
+        .setRequired(true)
+        .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })
+    ),
+
+  new SlashCommandBuilder()
     .setName('summary')
     .setDescription('Tóm tắt 15–20 tin nhắn gần nhất trong kênh/ticket này'),
   new SlashCommandBuilder()
@@ -1231,6 +1242,18 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
+    if (commandName === 'voicechat') {
+      const mode = interaction.options.getString('mode');
+      const on = mode === 'on';
+      setUserVoiceChat(interaction.user.id, on);
+      return interaction.reply({
+        content: on
+          ? '🎙️ **Chat thoại BẬT**\n1. Vào voice → `/voice action:join`\n2. Nhắn text hoặc **tin nhắn thoại** trong kênh AI/ticket\n3. Bot trả lời + cố đọc to (host free có thể gửi MP3)'
+          : '🔇 Đã tắt chat thoại.',
+        ephemeral: true,
+      });
+    }
+
     if (commandName === 'voice') {
       const action = interaction.options.getString('action');
 
@@ -1467,6 +1490,23 @@ client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
   const ticketData = getTicketByChannel(message.channel.id);
+
+  // Bật/tắt chat thoại bằng tin nhắn
+  {
+    const raw = message.content.replace(/<@!?\d+>/g, '').trim();
+    if (/^(?:!)?voicechat\s+on$/i.test(raw)) {
+      setUserVoiceChat(message.author.id, true);
+      return message
+        .reply(
+          '🎙️ **Chat thoại BẬT** — `/voice join` rồi nhắn text hoặc tin nhắn thoại.'
+        )
+        .catch(() => {});
+    }
+    if (/^(?:!)?voicechat\s+off$/i.test(raw)) {
+      setUserVoiceChat(message.author.id, false);
+      return message.reply('🔇 Đã tắt chat thoại.').catch(() => {});
+    }
+  }
 
   // Help dạng tin nhắn (không cần slash menu)
   const helpText = message.content.replace(/<@!?\d+>/g, '').trim();
