@@ -250,13 +250,60 @@ const lastGifAt = new Map();
 const GIF_COOLDOWN_MS = 3 * 60 * 1000; // 3 phút / kênh
 const GIF_CHANCE = 0.22; // ~22% khi đủ điều kiện cảm xúc mạnh
 
-async function resolveEmotionalGif({ userEmotion, replyText, getGifForEmotion, getGifByKeyword, channelId }) {
-  // Chỉ GIF khi cảm xúc user rõ (không neutral) + random + cooldown kênh
+/** User chủ động xin GIF? → keyword (EN) hoặc null */
+function parseGifRequest(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  // "gửi gif", "gif đi", "send gif funny", "gif: cat"
+  let m = raw.match(/^(?:gửi\s*)?gif\s*[:\-]?\s*(.+)$/i);
+  if (m && m[1] && !/^(đi|di|cho\s*mình|pls|please|nha|nhé|voi|với)$/i.test(m[1].trim())) {
+    return m[1].trim().slice(0, 60);
+  }
+  if (/^(?:gửi\s*)?(?:cho\s*mình\s*)?gif(?:\s+đi)?\s*[!?.]*$/i.test(raw)) {
+    return 'funny meme';
+  }
+  if (/(?:gửi|send|cho)\s+(?:một\s+)?gif|gif\s+(?:đi|di|please|pls)/i.test(raw)) {
+    // lấy vài từ sau "gif" nếu có
+    const after = raw.replace(/.*\bgif\b\s*(?:đi|di)?\s*/i, '').trim();
+    return (after && after.length > 1 ? after : 'funny reaction').slice(0, 60);
+  }
+  return null;
+}
+
+async function resolveEmotionalGif({
+  userEmotion,
+  replyText,
+  getGifForEmotion,
+  getGifByKeyword,
+  channelId,
+  forceKeyword = null,
+}) {
+  const cid = channelId ? String(channelId) : null;
+
+  // User xin GIF tường minh → bỏ random, cooldown ngắn hơn (30s)
+  if (forceKeyword) {
+    if (cid) {
+      const last = lastGifAt.get(cid) || 0;
+      if (Date.now() - last < 30 * 1000) return null; // chống spam 30s
+    }
+    let gifUrl = null;
+    try {
+      gifUrl = await getGifByKeyword(forceKeyword);
+    } catch (_) {}
+    if (!gifUrl) {
+      try {
+        gifUrl = await getGifByKeyword('funny');
+      } catch (_) {}
+    }
+    if (gifUrl && cid) lastGifAt.set(cid, Date.now());
+    return gifUrl;
+  }
+
+  // Tự động theo cảm xúc: random + cooldown 3 phút
   const strong = userEmotion && userEmotion !== 'neutral';
   if (!strong) return null;
   if (Math.random() > GIF_CHANCE) return null;
 
-  const cid = channelId ? String(channelId) : null;
   if (cid) {
     const last = lastGifAt.get(cid) || 0;
     if (Date.now() - last < GIF_COOLDOWN_MS) return null;
@@ -274,7 +321,6 @@ async function resolveEmotionalGif({ userEmotion, replyText, getGifForEmotion, g
       } catch (_) {}
     }
   }
-  // Không fallback keyword tiếng Anh từ reply (dễ spam GIF lệch)
 
   if (gifUrl && cid) lastGifAt.set(cid, Date.now());
   return gifUrl;
@@ -288,6 +334,7 @@ module.exports = {
   getGifKeywordForEmotion,
   tryQuickEmotionalReply,
   resolveEmotionalGif,
+  parseGifRequest,
   EMOTION_GIF_KEYWORDS,
   EMOTION_TONE_HINTS,
 };
