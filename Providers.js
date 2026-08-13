@@ -79,8 +79,9 @@ const PROVIDER_MODELS = {
     { label: 'Claude 3.5 Haiku', description: 'Nhanh, rẻ', value: 'claude-3-5-haiku-latest' },
   ],
   grok: [
-    { label: 'Grok 2', description: 'xAI', value: 'grok-2-latest' },
-    { label: 'Grok 3', description: 'Mới hơn (nếu key hỗ trợ)', value: 'grok-3' },
+    { label: 'Grok 2', description: 'xAI (ổn định)', value: 'grok-2-latest' },
+    { label: 'Grok 2 Mini', description: 'Nhanh, rẻ hơn', value: 'grok-2-mini' },
+    { label: 'Grok 3', description: 'Cần key có quyền model này', value: 'grok-3-latest' },
   ],
   deepseek: [
     { label: 'DeepSeek Chat', description: 'Mặc định', value: 'deepseek-chat' },
@@ -229,6 +230,15 @@ async function chatExternal({
       .map((p) => (p.type === 'text' ? p.text : ''))
       .join('')
       .trim();
+  }
+
+  // Chuẩn hóa model id
+  if (provider === 'grok') {
+    if (!model || model === 'grok-3') model = 'grok-2-latest';
+    if (model === 'grok-3-latest') model = 'grok-3-latest';
+  }
+  if (provider === 'chatgpt' && (!model || String(model).startsWith('gemini'))) {
+    model = 'gpt-4.1-mini';
   }
 
   // OpenAI-compatible: ChatGPT, Grok, DeepSeek
