@@ -153,7 +153,7 @@ function normalizeProviderId(s) {
 
 function helpKeyText() {
   return (
-    '🔑 **Nhập API key theo nhà cung cấp:**\n' +
+    '🔑 **Nhập API key:**\n' +
     '```\n' +
     'key gemini: AIza...\n' +
     'key chatgpt: sk-...\n' +
@@ -161,9 +161,13 @@ function helpKeyText() {
     'key grok: xai-...\n' +
     'key deepseek: sk-...\n' +
     '```\n' +
-    '• `key: AIza...` = Gemini (mặc định)\n' +
-    '• Chọn **persona** ChatGPT/Claude/Grok/DeepSeek → bot dùng key tương ứng nếu đã nhập\n' +
-    '• Key chỉ lưu trong **ticket** (không gửi đi đâu khác)'
+    '**Link lấy key:**\n' +
+    '• Gemini: https://aistudio.google.com\n' +
+    '• ChatGPT: https://platform.openai.com/api-keys\n' +
+    '• Claude: https://console.anthropic.com/settings/keys\n' +
+    '• Grok: https://console.x.ai\n' +
+    '• DeepSeek: https://platform.deepseek.com/api_keys\n' +
+    'Key chỉ lưu trong **ticket**. Model + key phải cùng nhà cung cấp.'
   );
 }
 
