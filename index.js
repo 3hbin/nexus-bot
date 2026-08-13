@@ -85,6 +85,7 @@ const {
   setUserPersona,
   setUserTts,
   setUserReplyMode,
+  setUserVoiceChat,
   personaDisplayName,
   getStrictModeBlock,
 } = require('./UserPrefs.js');
@@ -626,7 +627,9 @@ const commands = [
         .addChoices(
           { name: 'Join kênh voice của bạn', value: 'join' },
           { name: 'Leave voice', value: 'leave' },
-          { name: 'Speak (đọc text)', value: 'speak' }
+          { name: 'Speak (đọc text)', value: 'speak' },
+          { name: 'Bật chat thoại (bot đọc câu trả lời)', value: 'chat_on' },
+          { name: 'Tắt chat thoại', value: 'chat_off' }
         )
     )
     .addStringOption((opt) =>
@@ -1247,6 +1250,19 @@ client.on('interactionCreate', async (interaction) => {
         const r = await joinVoiceChannel(ch);
         return interaction.editReply(r.message);
       }
+      if (action === 'chat_on' || action === 'chat_off') {
+        const on = action === 'chat_on';
+        setUserVoiceChat(interaction.user.id, on);
+        return interaction.reply({
+          content: on
+            ? '🎙️ **Chat thoại BẬT** — khi bot đang trong voice, câu trả lời AI sẽ được **đọc to**.\n' +
+              'Cách dùng: `/voice join` → nhắn text hoặc **tin nhắn thoại** trong kênh AI/ticket.\n' +
+              '_(Host free có thể chỉ gửi file MP3 nếu UDP voice lỗi)_'
+            : '🔇 Đã tắt chat thoại.',
+          ephemeral: true,
+        });
+      }
+
       if (action === 'leave') {
         if (!guildId) {
           return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
@@ -1571,10 +1587,21 @@ client.on('messageCreate', async (message) => {
     const name = (a.name || '').toLowerCase();
     return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(name);
   });
+  // Tin nhắn thoại Discord / file audio
+  const audioAtts = Array.from(message.attachments?.values?.() || []).filter((a) => {
+    const ct = (a.contentType || '').toLowerCase();
+    const name = (a.name || '').toLowerCase();
+    return (
+      ct.startsWith('audio/') ||
+      ct.includes('ogg') ||
+      ct.includes('voice') ||
+      /\.(ogg|mp3|wav|m4a|webm|opus)$/i.test(name)
+    );
+  });
 
-  if (!prompt && imageAtts.length === 0) {
+  if (!prompt && imageAtts.length === 0 && audioAtts.length === 0) {
     try {
-      await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi chữ hoặc ảnh)');
+      await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi chữ, ảnh hoặc **tin nhắn thoại**)');
     } catch (err) {}
     return;
   }
@@ -1763,7 +1790,50 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // Payload multimodal: text + ảnh
+    // Tải audio / tin nhắn thoại (tối đa 1 file ≤ 8MB)
+    if (audioAtts.length > 0) {
+      const fetchFn =
+        typeof globalThis.fetch === 'function'
+          ? globalThis.fetch
+          : (() => {
+              try {
+                return require('node-fetch');
+              } catch {
+                return null;
+              }
+            })();
+      const att = audioAtts[0];
+      if (fetchFn && (!att.size || att.size <= 8 * 1024 * 1024)) {
+        try {
+          const res = await fetchFn(att.url, {
+            headers: { 'User-Agent': 'NexusAI-DiscordBot/1.0' },
+          });
+          if (res.ok) {
+            const arr = await res.arrayBuffer();
+            if (arr && arr.byteLength >= 64 && arr.byteLength <= 8 * 1024 * 1024) {
+              const b64 = Buffer.from(arr).toString('base64');
+              let mime = (att.contentType || 'audio/ogg').split(';')[0].trim();
+              if (!mime.startsWith('audio/')) {
+                if (/\.mp3$/i.test(att.name || '')) mime = 'audio/mpeg';
+                else if (/\.wav$/i.test(att.name || '')) mime = 'audio/wav';
+                else if (/\.webm$/i.test(att.name || '')) mime = 'audio/webm';
+                else mime = 'audio/ogg';
+              }
+              visionParts.push({ inlineData: { mimeType: mime, data: b64 } });
+              if (!String(textPart).trim() || textPart === prompt) {
+                textPart =
+                  (prompt && prompt.trim()) ||
+                  '[User gửi tin nhắn thoại / file audio. Hãy nghe, hiểu nội dung, trả lời tiếng Việt tự nhiên như đang trò chuyện.]';
+              }
+            }
+          }
+        } catch (auErr) {
+          console.warn('Tải audio lỗi:', auErr && auErr.message);
+        }
+      }
+    }
+
+    // Payload multimodal: text + ảnh/audio
     let messagePayload;
     if (visionParts.length > 0) {
       messagePayload = [{ text: textPart }, ...visionParts];
@@ -1942,6 +2012,29 @@ client.on('messageCreate', async (message) => {
         await firstSent.react(reactEmoji).catch(() => {});
       }
     } catch (_) {}
+    // Chat thoại: đọc câu trả lời nếu user bật + bot có thể speak trong guild
+    try {
+      const prefsVc = getUserPrefs(message.author.id);
+      if (prefsVc.voiceChat && message.guild && replyText) {
+        const speakText = String(replyText).replace(/https?:\/\/\S+/g, '').slice(0, 400);
+        if (speakText.length > 2) {
+          const r = await speakInGuild(message.guild.id, speakText, {
+            userVoiceChannel: message.member?.voice?.channel || null,
+          });
+          if (r && r.fallback && r.mp3Buffer) {
+            await message.channel
+              .send({
+                content: r.message || '🔊 *(Voice UDP lỗi — gửi MP3)*',
+                files: [new AttachmentBuilder(r.mp3Buffer, { name: 'nexus_voice.mp3' })],
+              })
+              .catch(() => {});
+          }
+        }
+      }
+    } catch (vcErr) {
+      console.warn('voicechat speak', vcErr && vcErr.message);
+    }
+
   } catch (error) {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
     await message.reply('❌ Đã có lỗi xảy ra khi xử lý yêu cầu của bạn. Hãy thử lại hoặc dùng `/reset`.').catch(() => {});
