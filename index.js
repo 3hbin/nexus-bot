@@ -1752,7 +1752,15 @@ client.on('messageCreate', async (message) => {
       const geminiKey = pk.gemini || ticketData.userApiKey || null;
       const keyForWant = pk[wantProv] || (wantProv === 'gemini' ? geminiKey : null);
 
-      if (wantProv !== 'gemini' && keyForWant) {
+      // Model non-Gemini → BẮT BUỘC key đúng provider (không gọi Gemini với tên model Grok/GPT)
+      if (wantProv !== 'gemini') {
+        if (!keyForWant) {
+          return message.reply(
+            `⚠️ Model **${selectedModel}** thuộc **${PROVIDER_META[wantProv]?.label || wantProv}**.\n` +
+              `Cần key ${wantProv}:\n\`key ${wantProv}: ${PROVIDER_META[wantProv]?.keyHint || '...'}\`\n\n` +
+              helpKeyText()
+          );
+        }
         externalProvider = wantProv;
         externalApiKey = keyForWant;
         usingTicketKey = true;
@@ -1760,15 +1768,9 @@ client.on('messageCreate', async (message) => {
       } else if (geminiKey) {
         activeAi = new GoogleGenAI({ apiKey: geminiKey });
         usingTicketKey = true;
-      } else if (wantProv !== 'gemini') {
-        return message.reply(
-          `⚠️ Persona **${wantProv}** cần API key.\n` +
-            `Nhắn: \`key ${wantProv}: ${PROVIDER_META[wantProv]?.keyHint || '...'}\`\n\n` +
-            helpKeyText()
-        );
       } else {
         return message.reply(
-          '⚠️ **Ticket cần ít nhất 1 API key!**\n' + helpKeyText()
+          '⚠️ **Ticket cần key Gemini!**\n' + helpKeyText()
         );
       }
     }
@@ -1994,10 +1996,13 @@ client.on('messageCreate', async (message) => {
 
       const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
       const keySource = usingTicketKey ? 'Key riêng của Ticket này' : 'Key mặc định của Bot';
+      const apiLabel = externalProvider
+        ? (PROVIDER_META[externalProvider]?.label || externalProvider)
+        : 'Gemini';
 
       const detailMsg = friendly
         ? friendly
-        : `❌ **Lỗi liên lạc Gemini API**\n` +
+        : `❌ **Lỗi liên lạc ${apiLabel} API**\n` +
           `> Model: \`${selectedModel}\`\n` +
           `> Nguồn Key: ${keySource}\n` +
           `> Mã lỗi: \`${status}\`\n` +
