@@ -93,6 +93,14 @@ const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
 const { PERSONA_PRESETS } = require('./Interest.js');
 const { setAdminLogClient, adminLog } = require('./AdminLog.js');
 const {
+  parseKeyMessage,
+  helpKeyText,
+  chatExternal,
+  providerFromModel,
+  providerForPersona,
+  PROVIDER_META,
+} = require('./Providers.js');
+const {
   loadMemory,
   addMemory,
   forgetMemory,
@@ -894,6 +902,9 @@ client.on('interactionCreate', async (interaction) => {
             ? `custom_${(customPersonaText || '').slice(0, 40).replace(/\s+/g, '_')}`
             : selectedPersona;
         const sessionKey = `${interaction.user.id}_${interaction.channelId}_${selectedModel}_${personaKeyPart}`;
+        if (!activeAi) {
+          return interaction.editReply('❌ Regenerate hiện hỗ trợ phiên Gemini.');
+        }
         if (!userSessions.has(sessionKey)) {
           const restoredHistory = getSavedHistory(sessionKey);
           const chatSession = activeAi.chats.create({
@@ -909,7 +920,7 @@ client.on('interactionCreate', async (interaction) => {
         }
         const chat = userSessions.get(sessionKey);
         const result = await chat.sendMessage({
-          message: `[Người dùng yêu cầu TRẢ LỜI LẠI với cách diễn đạt khác, cùng ý]\n\n${fakeContent}`,
+          message: '[Người dùng yêu cầu TRẢ LỜI LẠI với cách diễn đạt khác, cùng ý]\n\n' + fakeContent,
         });
         consumeQuota(interaction.user.id, 'chat');
         clearGeminiLock().catch(() => {});
@@ -1516,14 +1527,33 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [buildHelpEmbed()] }).catch(() => {});
   }
 
-  if (ticketData && message.content.trim().toLowerCase().startsWith('key:')) {
-    const apiKey = message.content.replace(/key:/i, '').trim();
-    if (apiKey.length < 20) {
-      return message.reply('❌ Key Gemini không hợp lệ. Vui lòng kiểm tra lại!');
+  // Nhập key đa nhà cung cấp (ticket)
+  if (ticketData) {
+    const parsedKey = parseKeyMessage(message.content);
+    if (parsedKey && parsedKey.apiKey) {
+      if (parsedKey.apiKey.length < 12) {
+        return message.reply('❌ Key quá ngắn — kiểm tra lại.');
+      }
+      const prov = parsedKey.provider || 'gemini';
+      const label = PROVIDER_META[prov]?.label || prov;
+      await setTicketApiKey(message.channel.id, parsedKey.apiKey, prov);
+      await message.delete().catch(() => {});
+      return message.channel.send(
+        `🔑 **Đã lưu key ${label}** cho ticket này.\n` +
+          `Persona **${prov}** sẽ ưu tiên key này. Gõ \`keys\` để xem đã nhập provider nào.\n` +
+          `_(Tin nhắn chứa key đã xóa)_`
+      );
     }
-    setTicketApiKey(message.channel.id, apiKey);
-    await message.delete().catch(() => {});
-    return message.channel.send('🔑 **Đã lưu Key Gemini thành công!** (Tin nhắn chứa Key đã được tự động xóa).');
+    if (/^keys?$/i.test(message.content.trim())) {
+      const tk = getTicketByChannel(message.channel.id) || ticketData;
+      const pk = tk.providerKeys || {};
+      if (tk.userApiKey && !pk.gemini) pk.gemini = tk.userApiKey;
+      const lines = Object.keys(PROVIDER_META).map((id) => {
+        const has = !!(pk[id] || (id === 'gemini' && tk.userApiKey));
+        return `${has ? '✅' : '⬜'} **${PROVIDER_META[id].label}** — \`key ${id}: ${PROVIDER_META[id].keyHint}\``;
+      });
+      return message.reply('🔑 **Key trong ticket:**\n' + lines.join('\n') + '\n\n' + helpKeyText()).catch(() => {});
+    }
   }
 
 
@@ -1709,21 +1739,41 @@ client.on('messageCreate', async (message) => {
     selectedPersona = userPrefs.selectedPersona || DEFAULT_PERSONA_ID;
     customPersonaText = userPrefs.customPersonaText || null;
 
+    let externalProvider = null; // chatgpt|claude|grok|deepseek
+    let externalApiKey = null;
+
     if (ticketData) {
-      if (!ticketData.userApiKey) {
-        return message.reply(
-          '⚠️ **Kênh Ticket yêu cầu API Key riêng!**\nVui lòng nhắn `key: <GEMINI_API_KEY_CỦA_BẠN>` vào đây trước khi trò chuyện.'
-        );
-      }
-      activeAi = new GoogleGenAI({ apiKey: ticketData.userApiKey });
-      selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
-      // Trong ticket: ưu tiên persona đã chọn trên kênh ticket
       selectedPersona = ticketData.selectedPersona || DEFAULT_PERSONA_ID;
       customPersonaText = ticketData.customPersonaText || null;
-      usingTicketKey = true;
+      selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
+
+      const wantProv = providerFromModel(selectedModel) || providerForPersona(selectedPersona);
+      const pk = ticketData.providerKeys || {};
+      const geminiKey = pk.gemini || ticketData.userApiKey || null;
+      const keyForWant = pk[wantProv] || (wantProv === 'gemini' ? geminiKey : null);
+
+      if (wantProv !== 'gemini' && keyForWant) {
+        externalProvider = wantProv;
+        externalApiKey = keyForWant;
+        usingTicketKey = true;
+        activeAi = null;
+      } else if (geminiKey) {
+        activeAi = new GoogleGenAI({ apiKey: geminiKey });
+        usingTicketKey = true;
+      } else if (wantProv !== 'gemini') {
+        return message.reply(
+          `⚠️ Persona **${wantProv}** cần API key.\n` +
+            `Nhắn: \`key ${wantProv}: ${PROVIDER_META[wantProv]?.keyHint || '...'}\`\n\n` +
+            helpKeyText()
+        );
+      } else {
+        return message.reply(
+          '⚠️ **Ticket cần ít nhất 1 API key!**\n' + helpKeyText()
+        );
+      }
     }
 
-    if (!activeAi) {
+    if (!externalProvider && !activeAi) {
       return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
     }
 
@@ -1734,41 +1784,42 @@ client.on('messageCreate', async (message) => {
         : selectedPersona;
     const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}`;
 
-    if (!userSessions.has(sessionKey)) {
-      // Khôi phục lịch sử đã lưu trên đĩa (nếu có) thay vì luôn bắt đầu trống,
-      // để bộ nhớ hội thoại sống sót qua các lần restart/redeploy.
-      const restoredHistory = getSavedHistory(sessionKey);
-      let systemInstruction = getSystemInstructionForPersona(
-        SYSTEM_INSTRUCTION,
-        selectedPersona,
-        customPersonaText
-      );
-      if (userPrefs.replyMode === 'strict') {
-        systemInstruction += '\n\n' + getStrictModeBlock();
-      }
-      if (ticketData?.contextNote) {
-        systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
-      }
-      systemInstruction += getMemorySystemBlock(message.author.id);
-      systemInstruction +=
-        '\n\n[Code policy] Khi user xin code dài/full project: (1) tóm tắt cấu trúc ngắn, (2) mỗi file bọc trong code fence ```lang với nội dung đủ dài — hệ thống đổi thành LINK paste. Không dừng giữa chừng. Ưu tiên đầy đủ trong fence.';
+    let systemInstruction = getSystemInstructionForPersona(
+      SYSTEM_INSTRUCTION,
+      selectedPersona,
+      customPersonaText
+    );
+    if (userPrefs.replyMode === 'strict') {
+      systemInstruction += '\n\n' + getStrictModeBlock();
+    }
+    if (ticketData?.contextNote) {
+      systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
+    }
+    systemInstruction += getMemorySystemBlock(message.author.id);
+    systemInstruction +=
+      '\n\n[Code policy] Khi user xin code dài/full project: (1) tóm tắt cấu trúc ngắn, (2) mỗi file bọc trong code fence ```lang — hệ thống đổi thành LINK paste.';
 
-      const chatSession = activeAi.chats.create({
-        model: selectedModel,
-        history: restoredHistory,
-        config: {
-          systemInstruction,
-          maxOutputTokens: 8192,
-          thinkingConfig: { thinkingLevel: 'medium' },
-        },
-      });
-      userSessions.set(sessionKey, chatSession);
-      if (restoredHistory.length > 0) {
-        console.log(`♻️ Đã khôi phục ${restoredHistory.length} tin nhắn lịch sử cho session ${sessionKey}`);
+    if (!userSessions.has(sessionKey)) {
+      const restoredHistory = getSavedHistory(sessionKey);
+      // legacy block kept minimal — systemInstruction đã có ở trên
+      if (!externalProvider && activeAi) {
+        const chatSession = activeAi.chats.create({
+          model: selectedModel,
+          history: restoredHistory,
+          config: {
+            systemInstruction,
+            maxOutputTokens: 8192,
+            thinkingConfig: { thinkingLevel: 'medium' },
+          },
+        });
+        userSessions.set(sessionKey, chatSession);
+        if (restoredHistory.length > 0) {
+          console.log(`♻️ Đã khôi phục ${restoredHistory.length} tin nhắn lịch sử cho session ${sessionKey}`);
+        }
       }
     }
 
-    const chat = userSessions.get(sessionKey);
+    const chat = externalProvider ? null : userSessions.get(sessionKey);
     // Gắn gợi ý cảm xúc vào tin nhắn (không đổi systemInstruction cố định của session)
     let textPart =
       prompt ||
@@ -1885,9 +1936,35 @@ client.on('messageCreate', async (message) => {
 
     let result;
     try {
-      result = await chat.sendMessage({ message: messagePayload });
+      if (externalProvider && externalApiKey) {
+        // ChatGPT / Claude / Grok / DeepSeek — không qua Gemini SDK
+        let history = [];
+        try {
+          history = getSavedHistory(sessionKey) || [];
+        } catch (_) {}
+        const textOut = await chatExternal({
+          provider: externalProvider,
+          apiKey: externalApiKey,
+          model: selectedModel,
+          systemInstruction,
+          history,
+          userMessage: typeof textPart === 'string' ? textPart : prompt,
+        });
+        result = { text: textOut };
+        // Lưu history đơn giản
+        try {
+          const nh = [
+            ...(history || []).slice(-18),
+            { role: 'user', content: prompt },
+            { role: 'assistant', content: textOut },
+          ];
+          updateSessionHistory(sessionKey, nh, selectedModel);
+        } catch (_) {}
+      } else {
+        result = await chat.sendMessage({ message: messagePayload });
+      }
     } catch (apiErr) {
-      console.error('❌ Lỗi khi gọi Gemini API (sendMessage):', apiErr);
+      console.error('❌ Lỗi khi gọi AI API:', apiErr);
       userSessions.delete(sessionKey);
 
       // Hết quota Gemini
