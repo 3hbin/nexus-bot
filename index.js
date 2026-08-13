@@ -1714,18 +1714,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ content: quickReply, embeds }).catch(() => message.reply(quickReply).catch(() => {}));
   }
 
-  let isChannelLocked = false;
-  if (!isDM && message.guild) {
-    try {
-      await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
-        SendMessages: false,
-      });
-      isChannelLocked = true;
-    } catch (lockErr) {
-      console.error('❌ Không thể khóa kênh (Cần quyền Manage Channels hoặc Manage Roles):', lockErr);
-    }
-  }
-
+  // Không khóa @everyone khi đang trả lời — dễ kẹt kênh nếu bot lỗi/restart
   try {
     try { await message.channel.sendTyping(); } catch (err) {}
 
@@ -2211,17 +2200,9 @@ client.on('messageCreate', async (message) => {
 
   } catch (error) {
     console.error('❌ Lỗi khi xử lý messageCreate:', error);
-    await message.reply('❌ Đã có lỗi xảy ra khi xử lý yêu cầu của bạn. Hãy thử lại hoặc dùng `/reset`.').catch(() => {});
-  } finally {
-    if (isChannelLocked && !isDM && message.guild) {
-      try {
-        await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
-          SendMessages: null,
-        });
-      } catch (unlockErr) {
-        console.error('❌ Không thể mở lại kênh chat:', unlockErr);
-      }
-    }
+    await message
+      .reply('❌ Đã có lỗi khi xử lý. Thử lại, gõ `help`, hoặc `/reset` nếu chat bị lệch.')
+      .catch(() => {});
   }
 });
 
