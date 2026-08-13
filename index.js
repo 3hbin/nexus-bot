@@ -66,6 +66,7 @@ const {
   appendEmotionToInstruction,
   tryQuickEmotionalReply,
   resolveEmotionalGif,
+  parseGifRequest,
 } = require('./Emotion.js');
 const {
   loadQuota,
@@ -2077,16 +2078,27 @@ client.on('messageCreate', async (message) => {
 
     let gifUrl = null;
     try {
+      const gifReq = parseGifRequest(prompt || message.content || '');
       gifUrl = await resolveEmotionalGif({
         userEmotion,
         replyText,
         getGifForEmotion,
         getGifByKeyword,
         channelId: message.channel.id,
+        forceKeyword: gifReq || null,
       });
     } catch (e) {
       console.warn('❌ Lỗi khi tìm GIF cảm xúc:', e);
       gifUrl = null;
+    }
+    const askedGif = parseGifRequest(prompt || message.content || '');
+    if (askedGif && !gifUrl) {
+      const noKey = !(process.env.GIPHY_API_KEY || '').trim();
+      replyText +=
+        '\n\n' +
+        (noKey
+          ? '⚠️ Chưa cấu hình **GIPHY_API_KEY** trên host — admin bot cần thêm key tại https://developers.giphy.com'
+          : '⚠️ Không lấy được GIF lúc này (Giphy lỗi / cooldown 30s). Thử lại hoặc `gif: cat` / `gif: funny`.');
     }
 
     // TTS (nếu user bật /tts on) — file MP3 đoạn đầu câu trả lời
