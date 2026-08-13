@@ -61,6 +61,7 @@ function getUserPrefs(userId) {
       customPersonaText: null,
       ttsEnabled: false,
       replyMode: 'normal', // normal | strict
+      voiceChat: false,
     }
   );
 }
@@ -93,6 +94,15 @@ function setUserReplyMode(userId, mode) {
   return cur;
 }
 
+function setUserVoiceChat(userId, enabled) {
+  const id = String(userId);
+  const cur = { ...getUserPrefs(id) };
+  cur.voiceChat = !!enabled;
+  prefs.set(id, cur);
+  scheduleSave();
+  return cur;
+}
+
 function personaDisplayName(personaId, customText) {
   if (personaId === 'custom') {
     const t = (customText || '').trim();
@@ -117,6 +127,7 @@ module.exports = {
   setUserPersona,
   setUserTts,
   setUserReplyMode,
+  setUserVoiceChat,
   personaDisplayName,
   getStrictModeBlock,
   saveUserPrefsNow,
