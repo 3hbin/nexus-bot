@@ -683,7 +683,7 @@ const commands = [
     .setDescription('Chấm “độ hợp” vibe giữa 2 người (meme)')
     .addUserOption((opt) => opt.setName('user1').setDescription('Người 1').setRequired(true))
     .addUserOption((opt) => opt.setName('user2').setDescription('Người 2').setRequired(true)),
-].map((cmd) => cmd.toJSON());
+];
 
 /** @type {Map<string, NodeJS.Timeout>} */
 const pendingReminders = new Map();
@@ -707,7 +707,9 @@ client.once('ready', async () => {
   console.log(`✅ Bot ${client.user.tag} đã online!`);
   try {
     console.log('🔄 Đang đăng ký Slash Commands lên Discord...');
-    const body = commands.map((c) => c.toJSON());
+    const body = commands.map((c) =>
+      typeof c?.toJSON === 'function' ? c.toJSON() : c
+    );
     // Guild = hiện ngay; Global có thể trễ tới 1h
     for (const [gid, guild] of client.guilds.cache) {
       try {
