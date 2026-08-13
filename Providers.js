@@ -66,25 +66,25 @@ const PROVIDER_MODELS = {
     { label: 'Gemini 3.5 Flash', description: 'Cân bằng', value: 'gemini-3.5-flash' },
     { label: 'Gemini 3.5 Flash-Lite', description: 'Rẻ, nhanh', value: 'gemini-3.5-flash-lite' },
     { label: 'Gemini 3.1 Pro', description: 'Sâu (cần billing)', value: 'gemini-3.1-pro' },
-    { label: 'Gemini 3.1 Flash-Lite', description: 'Siêu nhẹ', value: 'gemini-3.1-flash-lite' },
   ],
   chatgpt: [
-    { label: 'GPT-4.1 Mini', description: 'OpenAI mặc định', value: 'gpt-4.1-mini' },
-    { label: 'GPT-4.1', description: 'Mạnh hơn', value: 'gpt-4.1' },
-    { label: 'GPT-4o', description: 'Multimodal', value: 'gpt-4o' },
-    { label: 'GPT-4o Mini', description: 'Rẻ, nhanh', value: 'gpt-4o-mini' },
+    { label: 'GPT-5', description: 'OpenAI mặc định nhanh', value: 'gpt-5' },
+    { label: 'GPT-5 Mini', description: 'Nhanh, rẻ hơn', value: 'gpt-5-mini' },
+    { label: 'GPT-5.1', description: 'Cân bằng mới', value: 'gpt-5.1' },
+    { label: 'o4-mini', description: 'Reasoning nhẹ', value: 'o4-mini' },
   ],
   claude: [
-    { label: 'Claude Sonnet 4', description: 'Cân bằng', value: 'claude-sonnet-4-20250514' },
-    { label: 'Claude 3.5 Haiku', description: 'Nhanh, rẻ', value: 'claude-3-5-haiku-latest' },
+    { label: 'Claude Sonnet 5', description: 'Mặc định cân bằng', value: 'claude-sonnet-5-20250514' },
+    { label: 'Claude Haiku 4.5', description: 'Nhanh, rẻ', value: 'claude-haiku-4-5' },
+    { label: 'Claude Opus 5', description: 'Cao cấp suy luận', value: 'claude-opus-5' },
   ],
   grok: [
-    { label: 'Grok 2', description: 'xAI (ổn định)', value: 'grok-2-latest' },
-    { label: 'Grok 2 Mini', description: 'Nhanh, rẻ hơn', value: 'grok-2-mini' },
-    { label: 'Grok 3', description: 'Cần key có quyền model này', value: 'grok-3-latest' },
+    { label: 'Grok 4.6', description: 'Flagship xAI', value: 'grok-4.6' },
+    { label: 'Grok 4.5', description: 'Đa dụng, code', value: 'grok-4.5' },
+    { label: 'Grok 4.3', description: 'Nhanh / tiết kiệm hơn', value: 'grok-4.3' },
   ],
   deepseek: [
-    { label: 'DeepSeek Chat', description: 'Mặc định', value: 'deepseek-chat' },
+    { label: 'DeepSeek Chat', description: 'Mặc định (V-series API)', value: 'deepseek-chat' },
     { label: 'DeepSeek Reasoner', description: 'Suy luận', value: 'deepseek-reasoner' },
   ],
 };
@@ -92,7 +92,14 @@ const PROVIDER_MODELS = {
 function providerFromModel(modelId) {
   const m = String(modelId || '');
   if (m.startsWith('gemini')) return 'gemini';
-  if (m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('chatgpt')) return 'chatgpt';
+  if (
+    m.startsWith('gpt-') ||
+    m.startsWith('o1') ||
+    m.startsWith('o3') ||
+    m.startsWith('o4') ||
+    m.startsWith('chatgpt')
+  )
+    return 'chatgpt';
   if (m.startsWith('claude')) return 'claude';
   if (m.startsWith('grok')) return 'grok';
   if (m.startsWith('deepseek')) return 'deepseek';
@@ -212,7 +219,7 @@ async function chatExternal({
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: model || 'claude-sonnet-4-20250514',
+        model: model || 'claude-sonnet-5-20250514',
         max_tokens: 4096,
         system: sys || undefined,
         messages: messages.slice(-20),
@@ -234,25 +241,46 @@ async function chatExternal({
 
   // Chuẩn hóa model id
   if (provider === 'grok') {
-    if (!model || model === 'grok-3') model = 'grok-2-latest';
-    if (model === 'grok-3-latest') model = 'grok-3-latest';
+    const legacy = {
+      'grok-2-latest': 'grok-4.5',
+      'grok-2': 'grok-4.5',
+      'grok-2-mini': 'grok-4.5',
+      'grok-3': 'grok-4.5',
+      'grok-3-latest': 'grok-4.5',
+    };
+    if (!model) model = 'grok-4.5';
+    else if (legacy[model]) model = legacy[model];
   }
-  if (provider === 'chatgpt' && (!model || String(model).startsWith('gemini'))) {
-    model = 'gpt-4.1-mini';
+  if (provider === 'chatgpt') {
+    if (!model || String(model).startsWith('gemini')) model = 'gpt-5-mini';
+    const legacyGpt = {
+      'gpt-4.1-mini': 'gpt-5-mini',
+      'gpt-4.1': 'gpt-5',
+      'gpt-4o': 'gpt-5',
+      'gpt-4o-mini': 'gpt-5-mini',
+    };
+    if (legacyGpt[model]) model = legacyGpt[model];
+  }
+  if (provider === 'claude') {
+    const legacyClaude = {
+      'claude-sonnet-4-20250514': 'claude-sonnet-5-20250514',
+      'claude-3-5-haiku-latest': 'claude-haiku-4-5',
+    };
+    if (legacyClaude[model]) model = legacyClaude[model];
   }
 
   // OpenAI-compatible: ChatGPT, Grok, DeepSeek
   let base = 'https://api.openai.com/v1';
-  let defaultModel = 'gpt-4.1-mini';
+  let defaultModel = 'gpt-5-mini';
   if (provider === 'grok') {
     base = 'https://api.x.ai/v1';
-    defaultModel = 'grok-2-latest';
+    defaultModel = 'grok-4.6';
   } else if (provider === 'deepseek') {
     base = 'https://api.deepseek.com';
     defaultModel = 'deepseek-chat';
   } else if (provider === 'chatgpt') {
     base = 'https://api.openai.com/v1';
-    defaultModel = 'gpt-4.1-mini';
+    defaultModel = 'gpt-5-mini';
   }
 
   const messages = [];
@@ -286,7 +314,14 @@ async function chatExternal({
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data?.error?.message || data?.message || res.statusText || 'API error';
+    const msg =
+      data?.error?.message ||
+      data?.error?.code ||
+      (typeof data?.error === 'string' ? data.error : null) ||
+      data?.message ||
+      JSON.stringify(data?.error || data || {}).slice(0, 300) ||
+      res.statusText ||
+      'API error';
     const err = new Error(msg);
     err.status = res.status;
     throw err;
