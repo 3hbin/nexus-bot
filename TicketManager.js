@@ -332,21 +332,23 @@ async function handleTicketInteraction(interaction) {
         .setTitle('👋 Ticket AI của bạn đã sẵn sàng')
         .setDescription(
           '**Bắt đầu nhanh**\n' +
-            '1. Nhấn **🔑 Nhập Key Gemini** (hoặc gửi `key: AIza...`)\n' +
-            '2. Chọn **Model** + **Tính cách AI** ở menu dưới\n' +
-            '3. Nhắn bất kỳ — bot sẽ trả lời theo persona đã chọn\n\n' +
-            '**Lệnh & mẹo hữu ích**\n' +
-            '• `note: ...` — ghim ngữ cảnh (môn học, style trả lời…)\n' +
-            '• `/quiz` — đố vui trong ticket\n' +
-            '• `/summary` — tóm tắt hội thoại gần đây\n' +
-            '• `/dich` hoặc `dịch: ...` — dịch Việt ↔ Anh\n' +
-            '• Nút **🧹 Xóa memory** — xóa lịch sử chat ticket (không đóng kênh)\n' +
-            '• Nút **🔄 Trả lời lại** dưới mỗi câu AI\n\n' +
-            '**Lấy API Key**\n' +
-            '1) https://aistudio.google.com → Get API key\n' +
-            '2) Dán vào modal hoặc `key: <API_KEY>`\n\n' +
-            '⚠️ Model **Pro** thường cần Billing. Free tier có giới hạn request/ngày.\n' +
-            '💡 Đổi persona/model → tin nhắn tiếp theo dùng cấu hình mới.'
+            '1. Chọn **Model** (Gemini / ChatGPT / Claude / Grok / DeepSeek)\n' +
+            '2. Nhấn nút **Key …** tương ứng **hoặc** nhắn:\n' +
+            '`key gemini: …` · `key chatgpt: …` · `key claude: …` · `key grok: …` · `key deepseek: …`\n' +
+            '3. Chọn **Tính cách AI** → nhắn bình thường\n' +
+            'Gõ `keys` để xem đã lưu key provider nào.\n\n' +
+            '**Lệnh & mẹo**\n' +
+            '• `note: ...` — ghim ngữ cảnh\n' +
+            '• `/quiz` · `/summary` · `/dich` hoặc `dịch: ...`\n' +
+            '• Nút **🧹 Xóa memory** · **🔄 Trả lời lại**\n\n' +
+            '**Lấy API Key (link chính thức)**\n' +
+            '• **Gemini:** https://aistudio.google.com → Get API key\n' +
+            '• **ChatGPT (OpenAI):** https://platform.openai.com/api-keys\n' +
+            '• **Claude (Anthropic):** https://console.anthropic.com/settings/keys\n' +
+            '• **Grok (xAI):** https://console.x.ai → API keys\n' +
+            '• **DeepSeek:** https://platform.deepseek.com/api_keys\n\n' +
+            '⚠️ Nhiều model/API có free hạn chế hoặc cần Billing.\n' +
+            '💡 Model + key phải **cùng nhà cung cấp** (vd. model GPT + key ChatGPT).'
         )
         .setColor(0x57f287)
         .setFooter({ text: 'Nexus AI Ticket • Đóng ticket = xóa kênh + dữ liệu' });
