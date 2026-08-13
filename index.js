@@ -450,7 +450,7 @@ function formatApiError(apiErr, modelId = null) {
   } else if (s.includes('404') || /not found|does not exist/i.test(rawMsg)) {
     hint = '👉 Model không tồn tại hoặc Key không có quyền truy cập model này.';
   } else if (s.includes('400') || /invalid argument/i.test(rawMsg)) {
-    hint = '👉 Yêu cầu gửi lên không hợp lệ (có thể do tham số model không còn hỗ trợ).';
+    hint = '👉 Request không hợp lệ: model có thể đã đổi tên/ngừng hỗ trợ, hoặc key/payload sai. Thử model Grok **grok-4.5** / **grok-4.6**. Mã 400 ≠ hết tiền (hết tiền thường 402/403).';
   } else if (/timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(rawMsg)) {
     hint = '👉 Lỗi mạng/timeout khi gọi Gemini API. Hãy thử lại.';
   }
@@ -1969,29 +1969,45 @@ client.on('messageCreate', async (message) => {
       console.error('❌ Lỗi khi gọi AI API:', apiErr);
       userSessions.delete(sessionKey);
 
-      // Hết quota Gemini
-      const quotaInfo = parseGeminiQuotaError(apiErr, selectedModel);
-      if (quotaInfo.isQuota) {
-        // Chỉ khóa TOÀN BOT khi lỗi từ key mặc định — ticket key riêng không khóa server
-        if (!usingTicketKey) {
-          const lock = await lockGeminiQuota({
-            retryAfterSec: quotaInfo.retryAfterSec,
-            isDailyQuota: quotaInfo.isDailyQuota,
-            model: quotaInfo.model || selectedModel,
-            reason: 'gemini_429',
-          });
-          return message.reply(lock.message || getGeminiLockStatus().message).catch(() => {});
+      // Quota Gemini — chỉ khi đang gọi Gemini (không áp cho GPT/Claude/Grok/DeepSeek)
+      if (!externalProvider) {
+        const quotaInfo = parseGeminiQuotaError(apiErr, selectedModel);
+        if (quotaInfo.isQuota) {
+          if (!usingTicketKey) {
+            const lock = await lockGeminiQuota({
+              retryAfterSec: quotaInfo.retryAfterSec,
+              isDailyQuota: quotaInfo.isDailyQuota,
+              model: quotaInfo.model || selectedModel,
+              reason: 'gemini_429',
+            });
+            return message.reply(lock.message || getGeminiLockStatus().message).catch(() => {});
+          }
+          return message
+            .reply(
+              `⏳ **Key Gemini trong ticket đã hết quota (free tier).**\n` +
+                `> Model: \`${selectedModel}\`\n` +
+                `• Đổi model Gemini (flash-lite / 3.5…)\n` +
+                `• Hoặc \`key gemini: AIza...\` project khác\n` +
+                `• Hoặc Billing / đợi reset trên AI Studio.`
+            )
+            .catch(() => {});
         }
-        // Ticket + key user: báo lỗi tại chỗ, gợi ý đổi model / key
-        return message
-          .reply(
-            `⏳ **Key Gemini trong ticket này đã hết quota (free tier).**\n` +
-              `> Model: \`${selectedModel}\`\n` +
-              `• Đổi model trong menu ticket (flash-lite / 3.5…)\n` +
-              `• Hoặc dán key project khác: \`key: AIza...\`\n` +
-              `• Hoặc bật Billing / đợi reset quota trên AI Studio.`
-          )
-          .catch(() => {});
+      } else {
+        // Quota / billing provider khác
+        const st = String(apiErr?.status || apiErr?.code || '');
+        const msg = String(apiErr?.message || '');
+        if (st.includes('429') || /quota|rate limit|insufficient|billing|credit|balance/i.test(msg)) {
+          const label = PROVIDER_META[externalProvider]?.label || externalProvider;
+          return message
+            .reply(
+              `⏳ **${label}** — hết hạn mức / cần thanh toán (hoặc rate limit).\n` +
+                `> Model: \`${selectedModel}\`\n` +
+                `> Chi tiết: ${msg.slice(0, 200)}\n` +
+                `• Kiểm tra billing trên dashboard ${label}\n` +
+                `• Hoặc đổi model / dán key khác: \`key ${externalProvider}: ...\``
+            )
+            .catch(() => {});
+        }
       }
 
       const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
