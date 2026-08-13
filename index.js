@@ -1747,31 +1747,53 @@ client.on('messageCreate', async (message) => {
       customPersonaText = ticketData.customPersonaText || null;
       selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
 
-      const wantProv = providerFromModel(selectedModel) || providerForPersona(selectedPersona);
-      const pk = ticketData.providerKeys || {};
-      const geminiKey = pk.gemini || ticketData.userApiKey || null;
-      const keyForWant = pk[wantProv] || (wantProv === 'gemini' ? geminiKey : null);
+      let wantProv = providerFromModel(selectedModel) || providerForPersona(selectedPersona);
+      const pk = { ...(ticketData.providerKeys || {}) };
+      if (ticketData.userApiKey && !pk.gemini) pk.gemini = ticketData.userApiKey;
 
-      // Model non-Gemini → BẮT BUỘC key đúng provider (không gọi Gemini với tên model Grok/GPT)
-      if (wantProv !== 'gemini') {
-        if (!keyForWant) {
-          return message.reply(
-            `⚠️ Model **${selectedModel}** thuộc **${PROVIDER_META[wantProv]?.label || wantProv}**.\n` +
-              `Cần key ${wantProv}:\n\`key ${wantProv}: ${PROVIDER_META[wantProv]?.keyHint || '...'}\`\n\n` +
-              helpKeyText()
-          );
+      const pickKey = (prov) => pk[prov] || null;
+
+      // 1) Đúng provider của model đã chọn
+      let keyForWant = pickKey(wantProv);
+      // 2) Nếu không có key đúng provider nhưng có key khác → chuyển sang provider đó
+      if (!keyForWant) {
+        const order = ['gemini', 'chatgpt', 'deepseek', 'claude', 'grok'];
+        for (const p of order) {
+          if (pickKey(p)) {
+            wantProv = p;
+            keyForWant = pickKey(p);
+            // Đổi model mặc định cho provider nếu model hiện tại lệch nhà
+            if (providerFromModel(selectedModel) !== p) {
+              const defaults = {
+                gemini: 'gemini-3.6-flash',
+                chatgpt: 'gpt-5-mini',
+                claude: 'claude-sonnet-5-20250514',
+                grok: 'grok-4.6',
+                deepseek: 'deepseek-chat',
+              };
+              selectedModel = defaults[p] || selectedModel;
+            }
+            break;
+          }
         }
+      }
+
+      if (!keyForWant) {
+        return message.reply(
+          '⚠️ **Ticket chưa có API key!**\n' +
+            'Nhập key theo model bạn muốn dùng:\n' +
+            helpKeyText()
+        );
+      }
+
+      if (wantProv !== 'gemini') {
         externalProvider = wantProv;
         externalApiKey = keyForWant;
         usingTicketKey = true;
         activeAi = null;
-      } else if (geminiKey) {
-        activeAi = new GoogleGenAI({ apiKey: geminiKey });
-        usingTicketKey = true;
       } else {
-        return message.reply(
-          '⚠️ **Ticket cần key Gemini!**\n' + helpKeyText()
-        );
+        activeAi = new GoogleGenAI({ apiKey: keyForWant });
+        usingTicketKey = true;
       }
     }
 
