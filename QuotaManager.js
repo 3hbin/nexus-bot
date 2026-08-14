@@ -121,15 +121,18 @@ function consumeQuota(userId, type = 'chat') {
 }
 
 /**
- * Cảnh báo khi gần hết (còn ≤ 5 hoặc ≤ 20%).
+ * Cảnh báo khi gần hết (còn ≤ 8 hoặc ≤ 10% limit).
  */
 function maybeWarn(userId, type = 'chat') {
   const { remaining, limit, used } = checkQuota(userId, type);
   if (remaining <= 0) return null;
-  const lowAbs = remaining <= 5;
-  const lowPct = remaining / limit <= 0.2;
+  const lowAbs = remaining <= 8;
+  const lowPct = limit > 0 && remaining / limit <= 0.1;
   if (lowAbs || lowPct) {
-    return `⚠️ Còn **${remaining}/${limit}** lượt **${type}** hôm nay.`;
+    return (
+      `⚠️ **Sắp hết hạn mức ${type}** — còn **${remaining}/${limit}** hôm nay.\n` +
+      `Hạn mức reset ~00:00 (UTC+7). Dùng \`/quota\` để xem chi tiết.`
+    );
   }
   return null;
 }
