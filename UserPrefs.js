@@ -62,6 +62,7 @@ function getUserPrefs(userId) {
       ttsEnabled: false,
       replyMode: 'normal', // normal | strict
       voiceChat: false,
+      aiName: null,
     }
   );
 }
@@ -103,6 +104,17 @@ function setUserVoiceChat(userId, enabled) {
   return cur;
 }
 
+/** Đặt tên gọi AI (null/empty = mặc định Nexus AI) */
+function setUserAiName(userId, name) {
+  const id = String(userId);
+  const cur = { ...getUserPrefs(id) };
+  const n = String(name || '').trim().slice(0, 40);
+  cur.aiName = n || null;
+  prefs.set(id, cur);
+  scheduleSave();
+  return cur;
+}
+
 function personaDisplayName(personaId, customText) {
   if (personaId === 'custom') {
     const t = (customText || '').trim();
@@ -128,6 +140,7 @@ module.exports = {
   setUserTts,
   setUserReplyMode,
   setUserVoiceChat,
+  setUserAiName,
   personaDisplayName,
   getStrictModeBlock,
   saveUserPrefsNow,
