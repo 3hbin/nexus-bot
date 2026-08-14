@@ -101,6 +101,38 @@ function getTicketByChannel(channelId) {
   return tickets.get(String(channelId)) || null;
 }
 
+function getTicketCount() {
+  return tickets.size;
+}
+
+
+/**
+ * Sau redeploy file tickets.json mất — kênh ticket-... vẫn tồn tại trên Discord.
+ * Tự tạo lại record tối thiểu để bot nhận tin (dùng GEMINI_API_KEY server nếu có).
+ */
+function ensureTicketRecord(channel) {
+  if (!channel || !channel.id) return null;
+  const id = String(channel.id);
+  let t = tickets.get(id);
+  if (t) return t;
+  const name = String(channel.name || '');
+  if (!/^ticket-/i.test(name)) return null;
+  t = {
+    channelId: id,
+    userApiKey: null,
+    selectedModel: null,
+    selectedPersona: DEFAULT_PERSONA_ID,
+    customPersonaText: null,
+    providerKeys: {},
+    activeProvider: 'gemini',
+  };
+  tickets.set(id, t);
+  saveTickets().catch(() => {});
+  console.log('TicketManager: rehydrate ticket channel', name, id);
+  return t;
+}
+
+
 async function setTicketApiKey(channelId, apiKey, provider = 'gemini') {
   try {
     const key = String(channelId);
@@ -630,6 +662,28 @@ Nhớ nhập key đúng nhà cung cấp (nút Key… hoặc \`key ${ticketInfo.a
   }
 }
 
+async function setTicketAiName(channelId, name) {
+  try {
+    const key = String(channelId);
+    const existing = tickets.get(key) || {
+      channelId: key,
+      userApiKey: null,
+      selectedModel: null,
+      selectedPersona: DEFAULT_PERSONA_ID,
+      customPersonaText: null,
+      aiName: null,
+    };
+    const n = String(name || '').trim().slice(0, 40);
+    existing.aiName = n || null;
+    tickets.set(key, existing);
+    await saveTickets();
+    return true;
+  } catch (err) {
+    console.error('TicketManager: setTicketAiName error', err);
+    return false;
+  }
+}
+
 async function setTicketNote(channelId, noteText) {
   try {
     const key = String(channelId);
@@ -658,8 +712,11 @@ module.exports = {
   handleSetupTicketCommand,
   handleTicketInteraction,
   getTicketByChannel,
+  getTicketCount,
+  ensureTicketRecord,
   setTicketApiKey,
   getTicketProviderKey,
   setTicketPersona,
   setTicketNote,
+  setTicketAiName,
 };
