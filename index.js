@@ -221,6 +221,42 @@ async function sendLongTranslation(interactionOrMessage, translated, { ephemeral
   }
 }
 
+/** Gỡ LaTeX thường gặp — Discord không render math */
+function sanitizeDiscordMath(text) {
+  let s = String(text || '');
+  const plain = (inner) => {
+    let x = String(inner);
+    x = x.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1)/($2)');
+    x = x.replace(/\\sqrt\{([^{}]+)\}/g, 'sqrt($1)');
+    x = x.replace(/\\sqrt\s*([a-zA-Z0-9])/g, 'sqrt($1)');
+    x = x.replace(/\\times/g, '×');
+    x = x.replace(/\\cdot/g, '·');
+    x = x.replace(/\\approx/g, '≈');
+    x = x.replace(/\\pm/g, '±');
+    x = x.replace(/\\infty/g, '∞');
+    x = x.replace(/\\leq|\\le(?![a-zA-Z])/g, '≤');
+    x = x.replace(/\\geq|\\ge(?![a-zA-Z])/g, '≥');
+    x = x.replace(/\\neq|\\ne(?![a-zA-Z])/g, '≠');
+    x = x.replace(/\\rightarrow|\\to(?![a-zA-Z])/g, '→');
+    x = x.replace(/\\leftarrow/g, '←');
+    x = x.replace(/\\text\{([^{}]*)\}/g, '$1');
+    x = x.replace(/\\mathrm\{([^{}]*)\}/g, '$1');
+    x = x.replace(/\\left|\\right/g, '');
+    x = x.replace(/\\,/g, ' ');
+    x = x.replace(/\\ /g, ' ');
+    x = x.replace(/[{}]/g, '');
+    x = x.replace(/\\([a-zA-Z]+)/g, '$1'); // leftover \cmd
+    return x.trim();
+  };
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, inner) => plain(inner));
+  s = s.replace(/\$([^$\n]+?)\$/g, (_, inner) => plain(inner));
+  // Sót ngoài $
+  s = plain(s);
+  // dọn khoảng trắng kép
+  s = s.replace(/[ \t]{2,}/g, ' ');
+  return s;
+}
+
 function splitLongMessage(text, maxLen = 1900) {
   const src = String(text || '');
   if (src.length <= maxLen) return [src];
@@ -403,7 +439,13 @@ const SYSTEM_INSTRUCTION =
   'Bạn là trợ lý AI trên Discord, thân thiện, dí dỏm. ' +
   'Tên gọi của bạn do hệ thống chỉ định (thường trùng tên bot). ' +
   'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. ' +
-  'Trả lời ngắn gọn, rõ ràng.';
+  'Trả lời ngắn gọn, rõ ràng.\n' +
+  'ĐỊNH DẠNG DISCORD (bắt buộc):\n' +
+  '- KHÔNG dùng LaTeX/KaTeX: cấm $...$, $$...$$, \\[ \\, \\sqrt, \\times, \\approx, \\le, \\ge, \\rightarrow.\n' +
+  '- Công thức viết plain text hoặc Unicode: O(sqrt(n)), ≈, ≤, ≥, ×, →, n^2, sqrt(n).\n' +
+  '- Code để trong hàng rào markdown ```language ... ```.\n' +
+  '- Bảng markdown đơn giản được; trong bảng cũng không dùng $...$.\n' +
+  '- Heading dùng **in đậm** hoặc ### ít thôi, tránh #### rối.';
 
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 
@@ -779,7 +821,13 @@ client.once('ready', async () => {
     const body = commands.map((c) =>
       typeof c?.toJSON === 'function' ? c.toJSON() : c
     );
-    // Guild = hiện ngay; Global có thể trễ tới 1h
+    // Chỉ đăng ký GUILD (hiện ngay). Xóa GLOBAL để tránh lệnh bị TRÙNG 2 lần trong menu /
+    try {
+      await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
+      console.log('🧹 Đã xóa slash commands global (tránh duplicate)');
+    } catch (ge) {
+      console.warn('Clear global commands fail', ge && ge.message);
+    }
     for (const [gid, guild] of client.guilds.cache) {
       try {
         await rest.put(Routes.applicationGuildCommands(client.user.id, gid), { body });
@@ -788,8 +836,7 @@ client.once('ready', async () => {
         console.warn('Guild commands fail', gid, ge && ge.message);
       }
     }
-    await rest.put(Routes.applicationCommands(client.user.id), { body });
-    console.log('🎉 Đã đăng ký Slash Commands (global + guild)!');
+    console.log('🎉 Đã đăng ký Slash Commands (guild only)!');
   } catch (error) {
     console.error('❌ Lỗi khi đăng ký Slash Commands:', error);
   }
@@ -1088,7 +1135,8 @@ client.on('interactionCreate', async (interaction) => {
         });
         consumeQuota(interaction.user.id, 'chat');
         clearGeminiLock().catch(() => {});
-        const replyText = result?.text || 'Không tạo lại được.';
+        let replyText = result?.text || 'Không tạo lại được.';
+        replyText = sanitizeDiscordMath(replyText);
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
             .setCustomId(`nexus_regen:${key}`)
@@ -2415,6 +2463,7 @@ const toxicReply = handleToxicBehavior(prompt);
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
+    replyText = sanitizeDiscordMath(replyText);
     replyText = stripMediaUrls(replyText);
     // Nếu model chỉ trả URL gif, giữ câu ngắn
     if (!replyText) replyText = 'Đây nhé!';
