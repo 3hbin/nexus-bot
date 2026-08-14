@@ -10,6 +10,7 @@ const fs = require('fs').promises;
 const {
   Client,
   GatewayIntentBits,
+  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -94,6 +95,8 @@ const {
   setUserReplyMode,
   setUserVoiceChat,
   setUserAiName,
+  setUserGeminiKey,
+  getUserGeminiKey,
   personaDisplayName,
   getStrictModeBlock,
 } = require('./UserPrefs.js');
@@ -156,6 +159,7 @@ function buildHelpEmbed() {
           '`/persona` — đổi tính cách AI\n' +
           '`/summary` — tóm tắt kênh\n' +
           '`/imagine` · `/video` — tạo media\n' +
+          '**DM bot** — chat Gemini (cần `key gemini:` của bạn, model mặc định, không ticket)\n' +
           '`/mode` · `/tts` · `/speak` · `/quota`',
       },
       {
@@ -464,7 +468,7 @@ const client = new Client({
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
   ],
-  partials: ['CHANNEL'],
+  partials: [Partials.Channel, Partials.Message],
 });
 
 // ==========================================
@@ -1871,8 +1875,8 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [buildHelpEmbed()] }).catch(() => {});
   }
 
-  // Nhập key đa nhà cung cấp (ticket)
-  if (ticketData) {
+  // Nhập key — ticket (đa provider) hoặc DM (chỉ Gemini)
+  {
     const parsedKey = parseKeyMessage(message.content);
     if (parsedKey && parsedKey.apiKey) {
       if (parsedKey.apiKey.length < 12) {
@@ -1880,15 +1884,47 @@ client.on('messageCreate', async (message) => {
       }
       const prov = parsedKey.provider || 'gemini';
       const label = PROVIDER_META[prov]?.label || prov;
-      await setTicketApiKey(message.channel.id, parsedKey.apiKey, prov);
-      await message.delete().catch(() => {});
-      return message.channel.send(
-        `🔑 **Đã lưu key ${label}** cho ticket này.\n` +
-          `Persona **${prov}** sẽ ưu tiên key này. Gõ \`keys\` để xem đã nhập provider nào.\n` +
-          `_(Tin nhắn chứa key đã xóa)_`
-      );
+      const isDMMsg = !message.guild;
+
+      if (ticketData) {
+        await setTicketApiKey(message.channel.id, parsedKey.apiKey, prov);
+        await message.delete().catch(() => {});
+        return message.channel.send(
+          `🔑 **Đã lưu key ${label}** cho ticket này.\n` +
+            `Persona **${prov}** sẽ ưu tiên key này. Gõ \`keys\` để xem đã nhập provider nào.\n` +
+            `_(Tin nhắn chứa key đã xóa)_`
+        );
+      }
+
+      // DM: chỉ nhận Gemini, lưu theo user
+      if (isDMMsg) {
+        if (prov !== 'gemini') {
+          return message.reply(
+            'ℹ️ **Chat DM chỉ dùng Gemini.**\n' +
+              'Gửi: `key gemini: AIza...`\n' +
+              'Lấy key: https://aistudio.google.com\n' +
+              '_(Model mặc định gemini flash — không cần chọn model)_'
+          );
+        }
+        setUserGeminiKey(message.author.id, parsedKey.apiKey);
+        await message.delete().catch(() => {});
+        return message.channel.send(
+          '🔑 **Đã lưu key Gemini** cho chat DM của bạn.\n' +
+            'Model: **mặc định** (không cần chọn).\n' +
+            'Gõ tin nhắn bình thường để chat.\n' +
+            'Xóa key: `key gemini: xóa`\n' +
+            '_(Tin nhắn chứa key đã xóa)_'
+        );
+      }
     }
-    if (/^keys?$/i.test(message.content.trim())) {
+
+    // DM: xóa key
+    if (!message.guild && /^key\s*gemini\s*:\s*(xóa|xoá|xoa|clear|reset|delete)\s*$/i.test(message.content.trim())) {
+      setUserGeminiKey(message.author.id, null);
+      return message.reply('🗑️ Đã xóa key Gemini DM. Nhập lại `key gemini: AIza...` khi cần chat.').catch(() => {});
+    }
+
+    if (ticketData && /^keys?$/i.test(message.content.trim())) {
       const tk = getTicketByChannel(message.channel.id) || ticketData;
       const pk = tk.providerKeys || {};
       if (tk.userApiKey && !pk.gemini) pk.gemini = tk.userApiKey;
@@ -1897,6 +1933,17 @@ client.on('messageCreate', async (message) => {
         return `${has ? '✅' : '⬜'} **${PROVIDER_META[id].label}** — \`key ${id}: ${PROVIDER_META[id].keyHint}\``;
       });
       return message.reply('🔑 **Key trong ticket:**\n' + lines.join('\n') + '\n\n' + helpKeyText()).catch(() => {});
+    }
+
+    if (!message.guild && /^keys?$/i.test(message.content.trim())) {
+      const has = !!getUserGeminiKey(message.author.id);
+      return message
+        .reply(
+          `🔑 **Key DM:** ${has ? '✅ đã lưu Gemini' : '⬜ chưa có'}\n` +
+            'Nhập: `key gemini: AIza...`\n' +
+            'Model mặc định — **không cần chọn model**.'
+        )
+        .catch(() => {});
     }
   }
 
@@ -1979,6 +2026,8 @@ client.on('messageCreate', async (message) => {
   const targetChannel = guildId ? allowedChannels.get(guildId) : null;
   const isMentioned = message.mentions.has(client.user);
 
+  // DM: luôn cho chat (dùng GEMINI_API_KEY bot + model mặc định) — không cần ticket / chọn model
+  // Server: ticket HOẶC setchannel HOẶC mention
   if (!isDM && !ticketData && targetChannel && message.channel.id !== targetChannel) return;
   if (!isDM && !ticketData && !targetChannel && !isMentioned) return;
 
@@ -2033,12 +2082,14 @@ client.on('messageCreate', async (message) => {
     return message.reply(chatQuota.message).catch(() => {});
   }
 
-  // Khóa Gemini chỉ khi dùng KEY BOT — ticket có key riêng vẫn chat được
+  // Khóa Gemini chỉ khi dùng KEY BOT — ticket/DM có key riêng vẫn chat được
   const earlyTicket = ticketData || getTicketByChannel(message.channel.id);
+  const isDMEarly = !message.guild;
   const usingOwnTicketKey = !!(
-    earlyTicket &&
-    (earlyTicket.userApiKey ||
-      (earlyTicket.providerKeys && Object.keys(earlyTicket.providerKeys).length > 0))
+    (earlyTicket &&
+      (earlyTicket.userApiKey ||
+        (earlyTicket.providerKeys && Object.keys(earlyTicket.providerKeys).length > 0))) ||
+    (isDMEarly && getUserGeminiKey(message.author.id))
   );
   if (!usingOwnTicketKey) {
     const geminiLock = getGeminiLockStatus();
@@ -2069,7 +2120,22 @@ client.on('messageCreate', async (message) => {
 
   if (!prompt && imageAtts.length === 0 && audioAtts.length === 0) {
     try {
-      await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi chữ, ảnh hoặc **tin nhắn thoại**)');
+      if (isDM) {
+        {
+          const hasK = !!getUserGeminiKey(message.author.id);
+          await message.reply(
+            '👋 **Chat DM với Nexus AI** (không cần ticket)\n' +
+              (hasK
+                ? '✅ Đã có key Gemini — gửi câu hỏi để chat.\nModel **mặc định** — không cần chọn model.\n'
+                : '🔑 Trước hết gửi:\n```\nkey gemini: AIza...\n```\nLấy key: https://aistudio.google.com\n') +
+              '• `keys` — xem đã lưu key chưa\n' +
+              '• `key gemini: xóa` — xóa key\n' +
+              '• `help` / `/reset` — hướng dẫn / xóa lịch sử'
+          );
+        }
+      } else {
+        await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi chữ, ảnh hoặc **tin nhắn thoại**)');
+      }
     } catch (err) {}
     return;
   }
@@ -2202,10 +2268,37 @@ const toxicReply = handleToxicBehavior(prompt);
     }
 
     if (!externalProvider && !activeAi) {
-      if (aiInstance) {
+      if (isDM) {
+        // DM: BẮT BUỘC key Gemini của user — model mặc định, không chọn model
+        const userKey = getUserGeminiKey(message.author.id);
+        if (!userKey) {
+          return message.reply(
+            '🔑 **Chat DM cần key Gemini của bạn** (không dùng ticket).\n\n' +
+              'Gửi một tin:\n' +
+              '```\nkey gemini: AIza...\n```\n' +
+              'Lấy key free: https://aistudio.google.com\n' +
+              'Model: **mặc định** — không cần chọn model.'
+          );
+        }
+        activeAi = new GoogleGenAI({ apiKey: userKey });
+        selectedModel = DEFAULT_MODEL;
+        usingTicketKey = true; // coi như key riêng → không dính lock key bot
+        externalProvider = null;
+      } else if (aiInstance) {
         activeAi = aiInstance;
       } else {
         return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
+      }
+    }
+
+    // DM: luôn khóa model mặc định (gemini flash)
+    if (isDM) {
+      selectedModel = DEFAULT_MODEL;
+      externalProvider = null;
+      const userKey = getUserGeminiKey(message.author.id);
+      if (userKey) {
+        activeAi = new GoogleGenAI({ apiKey: userKey });
+        usingTicketKey = true;
       }
     }
 
