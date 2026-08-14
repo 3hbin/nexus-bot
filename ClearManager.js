@@ -2,8 +2,9 @@
 // Quản lý auto-clear channels và chức năng xoá tin nhắn
 const fs = require('fs').promises;
 const path = require('path');
+const { dataFile } = require('./paths.js');
 
-const AUTO_CLEAR_FILE = path.join(__dirname, 'data', 'autoClearChannels.json');
+const AUTO_CLEAR_FILE = dataFile('autoClearChannels.json');
 
 let autoClearSet = new Set();
 let schedulerInterval = null;
@@ -26,12 +27,14 @@ async function loadAutoClearChannels() {
     });
     if (!content) {
       autoClearSet = new Set();
-      console.log('ClearManager: Không tìm thấy file autoClearChannels, khởi tạo mới.');
+      console.log(
+        'ClearManager: Chưa có autoClearChannels trong DATA_DIR — tạo mới (gắn Volume để không mất khi deploy).'
+      );
       return;
     }
     const arr = JSON.parse(content || '[]');
     autoClearSet = new Set(Array.isArray(arr) ? arr : []);
-    console.log(`ClearManager: Loaded ${autoClearSet.size} autoClear channels.`);
+    console.log(`ClearManager: Loaded ${autoClearSet.size} autoClear channels từ ${AUTO_CLEAR_FILE}`);
   } catch (err) {
     console.error('ClearManager: Lỗi loadAutoClearChannels:', err);
     autoClearSet = new Set();
@@ -74,9 +77,6 @@ function isAutoClearEnabled(channelId) {
 }
 
 async function clearRecentMessages(channel, amount = 100) {
-  // Returns { bulkDeleted, individuallyDeleted }
-  const bulkDeleted = 0;
-  const individuallyDeleted = 0;
   try {
     if (!channel || !channel.messages) {
       throw new Error('Channel không hợp lệ cho clearRecentMessages');
@@ -86,7 +86,6 @@ async function clearRecentMessages(channel, amount = 100) {
     let totalBulk = 0;
     let totalIndividual = 0;
 
-    // Discord bulkDelete max 100 per call. We'll loop until we cover amount or no more messages.
     while (toFetch > 0) {
       const fetchLimit = Math.min(100, toFetch);
       const messages = await channel.messages.fetch({ limit: fetchLimit }).catch((e) => {
@@ -109,19 +108,24 @@ async function clearRecentMessages(channel, amount = 100) {
           const res = await channel.bulkDelete(deletable, true);
           totalBulk += res.size || 0;
         } catch (err) {
-          // bulkDelete có thể fail; fallback: try deleting individually
           for (const m of deletable) {
-            try { await m.delete().catch(() => {}); totalIndividual++; } catch (e) {}
+            try {
+              await m.delete().catch(() => {});
+              totalIndividual++;
+            } catch (e) {}
           }
         }
       }
 
       for (const m of old) {
-        try { await m.delete().catch(() => {}); totalIndividual++; } catch (e) {}
+        try {
+          await m.delete().catch(() => {});
+          totalIndividual++;
+        } catch (e) {}
       }
 
       toFetch -= messages.size;
-      if (messages.size < fetchLimit) break; // no more messages
+      if (messages.size < fetchLimit) break;
     }
 
     return { bulkDeleted: totalBulk, individuallyDeleted: totalIndividual };
@@ -132,7 +136,6 @@ async function clearRecentMessages(channel, amount = 100) {
 }
 
 function startAutoClearScheduler(client, intervalMs = 1000 * 60 * 60) {
-  // interval default: 1 hour
   if (schedulerInterval) clearInterval(schedulerInterval);
   schedulerInterval = setInterval(async () => {
     try {
@@ -141,13 +144,14 @@ function startAutoClearScheduler(client, intervalMs = 1000 * 60 * 60) {
       for (const channelId of Array.from(autoClearSet)) {
         try {
           const ch = await client.channels.fetch(channelId).catch(() => null);
-          if (!ch || !ch.isText()) continue;
-          // fetch up to 100 recent messages and delete those older than 24h
+          if (!ch || !ch.isTextBased?.()) continue;
           const messages = await ch.messages.fetch({ limit: 100 }).catch(() => null);
           if (!messages) continue;
           const toDelete = messages.filter((m) => now - m.createdTimestamp > 24 * 60 * 60 * 1000);
           if (toDelete.size === 0) continue;
-          const deletable = toDelete.filter((m) => now - m.createdTimestamp <= 14 * 24 * 60 * 60 * 1000);
+          const deletable = toDelete.filter(
+            (m) => now - m.createdTimestamp <= 14 * 24 * 60 * 60 * 1000
+          );
           const old = toDelete.filter((m) => now - m.createdTimestamp > 14 * 24 * 60 * 60 * 1000);
 
           if (deletable.size > 0) {
@@ -156,7 +160,9 @@ function startAutoClearScheduler(client, intervalMs = 1000 * 60 * 60) {
             } catch (e) {}
           }
           for (const m of old.values()) {
-            try { await m.delete().catch(() => {}); } catch (e) {}
+            try {
+              await m.delete().catch(() => {});
+            } catch (e) {}
           }
         } catch (err) {
           console.error('ClearManager: Error auto-clearing channel', channelId, err);
