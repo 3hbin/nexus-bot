@@ -1,28 +1,16 @@
 // SessionManager.js
-// Quản lý lưu trữ & khôi phục lịch sử hội thoại (chat history) xuống đĩa,
-// để userSessions không bị mất khi bot restart (redeploy trên Render, crash, v.v.)
-//
-// Thiết kế:
-// - Lưu theo sessionKey (giống key dùng trong userSessions ở index.js): `${userId}_${channelId}_${model}`
-// - Mỗi session lưu: { history: [...], model, lastActive }
-// - history là mảng theo format Gemini SDK: [{ role: 'user'|'model', parts: [{ text }] }, ...]
-// - Giới hạn tối đa MAX_HISTORY_MESSAGES tin/session (mặc định 20) để tránh phình file.
-// - Session không hoạt động quá SESSION_TTL_MS (mặc định 7 ngày) sẽ tự động bị dọn khi load hoặc theo lịch định kỳ.
-// - Ghi file có debounce để tránh I/O liên tục khi chat dồn dập.
-
+// Lưu lịch sử hội thoại xuống đĩa (DATA_DIR / Volume) để không mất khi redeploy
 const fs = require('fs').promises;
 const path = require('path');
+const { dataFile } = require('./paths.js');
 
-const SESSIONS_FILE =
-  process.env.SESSIONS_FILE || path.join(__dirname, 'data', 'sessions.json');
+const SESSIONS_FILE = process.env.SESSIONS_FILE || dataFile('sessions.json');
 
-const MAX_HISTORY_MESSAGES = 20; // giữ 20 tin gần nhất mỗi session (user+model tính chung)
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 ngày
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // dọn dẹp mỗi giờ
+const MAX_HISTORY_MESSAGES = 20;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
-// Map<sessionKey, { history: Array, model: string, lastActive: number }>
 let sessionStore = new Map();
-
 let saveTimeout = null;
 let cleanupIntervalHandle = null;
 
@@ -64,7 +52,9 @@ async function loadSessionsFromFile() {
     pruneExpiredSessions();
   } catch (err) {
     if (err.code === 'ENOENT') {
-      console.log('📂 SessionManager: Không tìm thấy file sessions, khởi tạo mới.');
+      console.log(
+        '📂 SessionManager: Chưa có sessions.json trong DATA_DIR — tạo mới (gắn Volume để không mất khi deploy).'
+      );
       sessionStore = new Map();
     } else {
       console.error('SessionManager: Lỗi khi load sessions:', err);
@@ -73,10 +63,6 @@ async function loadSessionsFromFile() {
   }
 }
 
-/**
- * Xoá các session đã quá hạn (không hoạt động > SESSION_TTL_MS).
- * Trả về số lượng session đã bị xoá.
- */
 function pruneExpiredSessions() {
   const now = Date.now();
   let removed = 0;
@@ -94,9 +80,6 @@ function pruneExpiredSessions() {
   return removed;
 }
 
-/**
- * Bắt đầu lịch dọn dẹp session hết hạn định kỳ.
- */
 function startSessionCleanupScheduler() {
   if (cleanupIntervalHandle) return;
   cleanupIntervalHandle = setInterval(() => {
@@ -104,22 +87,13 @@ function startSessionCleanupScheduler() {
   }, CLEANUP_INTERVAL_MS);
 }
 
-/**
- * Lấy lịch sử đã lưu cho một sessionKey (dùng để khôi phục chat session khi tạo mới).
- */
 function getSavedHistory(sessionKey) {
   const data = sessionStore.get(sessionKey);
   return data?.history || [];
 }
 
-/**
- * Cập nhật (ghi đè) toàn bộ lịch sử cho một sessionKey, tự động cắt bớt theo MAX_HISTORY_MESSAGES
- * và cập nhật lastActive. Lên lịch lưu xuống file (debounced).
- */
 function updateSessionHistory(sessionKey, fullHistory, model) {
-  const trimmed = Array.isArray(fullHistory)
-    ? fullHistory.slice(-MAX_HISTORY_MESSAGES)
-    : [];
+  const trimmed = Array.isArray(fullHistory) ? fullHistory.slice(-MAX_HISTORY_MESSAGES) : [];
 
   sessionStore.set(sessionKey, {
     history: trimmed,
@@ -130,9 +104,6 @@ function updateSessionHistory(sessionKey, fullHistory, model) {
   scheduleSaveSessions();
 }
 
-/**
- * Xoá lịch sử đã lưu cho một sessionKey cụ thể (ví dụ khi /reset).
- */
 function clearSessionHistory(sessionKey) {
   if (sessionStore.delete(sessionKey)) {
     scheduleSaveSessions();
@@ -141,9 +112,6 @@ function clearSessionHistory(sessionKey) {
   return false;
 }
 
-/**
- * Xoá tất cả session có key bắt đầu bằng prefix (ví dụ theo userId khi /reset).
- */
 function clearSessionsByPrefix(prefix) {
   let removed = 0;
   for (const key of sessionStore.keys()) {
