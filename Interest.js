@@ -182,12 +182,22 @@ const DEFAULT_PERSONA_ID = 'default';
  * @param {string|null} personaId - 'default' | 'tre_trau' | 'nhe_nhang' | 'roblox' | 'custom'
  * @param {string|null} customText - mô tả tùy chỉnh khi personaId === 'custom'
  */
-function getSystemInstructionForPersona(baseInstruction = '', personaId = null, customText = null) {
+function getSystemInstructionForPersona(baseInstruction = '', personaId = null, customText = null, aiName = null) {
   const base = (baseInstruction || '').trim();
+  const name = String(aiName || '').trim().slice(0, 40);
+  const nameBlock = name
+    ? `
+[Tên gọi AI]
+- Tên của bạn là **${name}** (do người dùng đặt).
+- Khi cần xưng hô / tự giới thiệu, dùng tên **${name}**, không bắt buộc nói "Nexus AI".
+- Vẫn là trợ lý Discord hữu ích; tên chỉ đổi cách gọi, không đổi quy tắc an toàn.
+`.trim()
+    : '';
 
+  let body = '';
   if (personaId === 'custom' && customText && String(customText).trim()) {
-    const customBlock = `
-Bạn là Nexus AI với **cá tính / sở thích tùy chỉnh** do người dùng đặt:
+    body = `
+Bạn là trợ lý AI với **cá tính / sở thích tùy chỉnh** do người dùng đặt:
 
 ${String(customText).trim()}
 
@@ -197,12 +207,12 @@ Quy tắc chung:
 - Không xúc phạm, không nội dung nguy hiểm.
 - Nếu xung đột với yêu cầu an toàn, ưu tiên an toàn.
 `.trim();
-    return base ? `${base}\n\n${customBlock}` : customBlock;
+  } else {
+    const id = personaId && PERSONA_PRESETS[personaId] ? personaId : DEFAULT_PERSONA_ID;
+    body = PERSONA_PRESETS[id].block;
   }
 
-  const id = personaId && PERSONA_PRESETS[personaId] ? personaId : DEFAULT_PERSONA_ID;
-  const block = PERSONA_PRESETS[id].block;
-  return base ? `${base}\n\n${block}` : block;
+  return [base, nameBlock, body].filter(Boolean).join('\n\n');
 }
 
 /** Tương thích cũ: mặc định persona default */
