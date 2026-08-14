@@ -37,8 +37,11 @@ const {
   handleSetupTicketCommand,
   handleTicketInteraction,
   getTicketByChannel,
+  getTicketCount,
+  ensureTicketRecord,
   setTicketApiKey,
   setTicketNote,
+  setTicketAiName,
 } = require('./TicketManager.js');
 const {
   generateImage,
@@ -87,12 +90,19 @@ const {
   setUserTts,
   setUserReplyMode,
   setUserVoiceChat,
+  setUserAiName,
   personaDisplayName,
   getStrictModeBlock,
 } = require('./UserPrefs.js');
 const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
 const { PERSONA_PRESETS } = require('./Interest.js');
 const { setAdminLogClient, adminLog } = require('./AdminLog.js');
+const {
+  loadModeration,
+  getModSettings,
+  setModEnabled,
+  checkMessageModeration,
+} = require('./Moderation.js');
 const {
   parseKeyMessage,
   helpKeyText,
@@ -159,7 +169,8 @@ function buildHelpEmbed() {
           '`/dich` · `dịch: ...` — dịch VI↔EN\n' +
           '`/export` — xuất chat .txt\n' +
           '`/quiz` · `/ship` · `/remind`\n' +
-          '`/voice` · `/ping` · `/reset`\n' +
+          '`/voice` · `/ping` · `/reset` · `/feedback`\n' +
+          'Admin: `/adminpanel` · `/moderation`\n' +
           'Nút: Trả lời lại · Dịch · 👍/👎\n' +
           'Gõ `help` hoặc `!help` cũng xem được hướng dẫn này',
       },
@@ -405,6 +416,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
   ],
   partials: ['CHANNEL'],
 });
@@ -688,6 +700,36 @@ const commands = [
     .setName('export')
     .setDescription('Xuất hội thoại gần đây trong kênh/ticket ra file .txt'),
   new SlashCommandBuilder()
+    .setName('ainame')
+    .setDescription('Đặt tên gọi AI (vd: Luna, Mây) — không bắt buộc giống Nexus')
+    .addStringOption((opt) =>
+      opt
+        .setName('name')
+        .setDescription('Tên mới (để trống / "reset" = về mặc định)')
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('feedback')
+    .setDescription('Góp ý / báo lỗi — gửi tới kênh admin log')
+    .addStringOption((opt) =>
+      opt.setName('message').setDescription('Nội dung góp ý').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('adminpanel')
+    .setDescription('Panel admin: online, ticket, quota lock, lệnh nhanh')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
+    .setName('moderation')
+    .setDescription('Bật/tắt lọc spam & link lạ trong kênh AI (Admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('mode')
+        .setDescription('on hoặc off')
+        .setRequired(true)
+        .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
     .setName('ship')
     .setDescription('Chấm “độ hợp” vibe giữa 2 người (meme)')
     .addUserOption((opt) => opt.setName('user1').setDescription('Người 1').setRequired(true))
@@ -776,6 +818,35 @@ client.once('ready', async () => {
 // ==========================================
 // XỬ LÝ SLASH COMMANDS & TICKET INTERACTIONS
 // ==========================================
+
+client.on('guildMemberAdd', async (member) => {
+  try {
+    if (!member || member.user?.bot) return;
+    const guild = member.guild;
+    const aiCh = allowedChannels.get(guild.id);
+    const lines = [
+      `👋 Chào **${member.user.username}** — mình là **Nexus AI** trên server **${guild.name}**.`,
+      '',
+      '**Bắt đầu nhanh**',
+      aiCh
+        ? `• Chat AI tại <#${aiCh}> (hoặc mention bot)`
+        : '• Mention bot hoặc hỏi admin kênh AI (`/setchannel`)',
+      '• Tạo **Ticket** nếu server có panel ticket → chọn model + persona + key',
+      '• Gõ `help` hoặc `/help` để xem lệnh',
+      '',
+      '**Mẹo**',
+      '• `/persona` — đổi tính cách AI',
+      '• `gif: funny` — gửi GIF (nếu server có Giphy)',
+      '• `/feedback` — góp ý cho admin',
+    ];
+    await member.send(lines.join('\n')).catch(() => {
+      /* DM đóng */
+    });
+  } catch (e) {
+    console.warn('guildMemberAdd welcome', e && e.message);
+  }
+});
+
 client.on('interactionCreate', async (interaction) => {
   try {
     // Nút xóa memory ticket
@@ -1016,6 +1087,135 @@ client.on('interactionCreate', async (interaction) => {
       } else {
         return interaction.reply({ content: 'ℹ️ Server này chưa thiết lập kênh duy nhất.', ephemeral: true });
       }
+    }
+
+    if (commandName === 'ainame') {
+      const raw = interaction.options.getString('name');
+      const inTicket = !!getTicketByChannel(interaction.channelId);
+      if (raw === null || raw === undefined) {
+        const ticket = getTicketByChannel(interaction.channelId);
+        const up = getUserPrefs(interaction.user.id);
+        const current = (ticket && ticket.aiName) || up.aiName || 'Nexus AI (mặc định)';
+        return interaction.reply({
+          content:
+            `🏷️ Tên AI hiện tại: **${current}**\n` +
+            `Đặt mới: \`/ainame name:Luna\` · reset: \`/ainame name:reset\`\n` +
+            (inTicket
+              ? 'Trong **ticket** tên lưu theo kênh ticket.'
+              : 'Ngoài ticket tên lưu theo **user** (mọi kênh AI).'),
+          ephemeral: true,
+        });
+      }
+      const n = String(raw).trim();
+      if (!n || /^reset|default|mặc định|mac dinh$/i.test(n)) {
+        if (inTicket) await setTicketAiName(interaction.channelId, null);
+        else setUserAiName(interaction.user.id, null);
+        return interaction.reply({
+          content: '✅ Đã reset tên AI về mặc định (Nexus AI).',
+          ephemeral: true,
+        });
+      }
+      if (inTicket) await setTicketAiName(interaction.channelId, n);
+      else setUserAiName(interaction.user.id, n);
+      return interaction.reply({
+        content:
+          `✅ AI sẽ xưng / được gọi là **${n.slice(0, 40)}**.\n` +
+          `Tin nhắn sau dùng tên này (persona + model giữ nguyên).`,
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'feedback') {
+      const msg = interaction.options.getString('message') || '';
+      await adminLog({
+        title: '💬 Feedback từ user',
+        description: msg.slice(0, 1500),
+        color: 0xfee75c,
+        fields: [
+          { name: 'User', value: `${interaction.user.tag} (\`${interaction.user.id}\`)`, inline: true },
+          {
+            name: 'Kênh',
+            value: interaction.channelId ? `<#${interaction.channelId}>` : 'DM',
+            inline: true,
+          },
+          {
+            name: 'Server',
+            value: interaction.guild ? interaction.guild.name : 'DM',
+            inline: true,
+          },
+        ],
+      });
+      return interaction.reply({
+        content:
+          '✅ Đã gửi góp ý tới admin.\n' +
+          (process.env.ADMIN_LOG_CHANNEL_ID
+            ? 'Cảm ơn bạn!'
+            : '⚠️ Admin chưa cấu hình `ADMIN_LOG_CHANNEL_ID` — góp ý có thể chưa tới kênh log.'),
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'moderation') {
+      if (!interaction.guildId) {
+        return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
+      }
+      const mode = interaction.options.getString('mode');
+      const on = mode === 'on';
+      setModEnabled(interaction.guildId, on);
+      return interaction.reply({
+        content: on
+          ? '🛡️ **Moderation BẬT** — lọc spam lặp + link đáng ngờ trong **kênh AI / ticket**.\nAdmin Manage Messages được bỏ qua.'
+          : '🛡️ Moderation **TẮT**.',
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'adminpanel') {
+      const lock = getGeminiLockStatus();
+      const ticketN = typeof getTicketCount === 'function' ? getTicketCount() : 0;
+      const guildId = interaction.guildId;
+      const aiCh = guildId ? allowedChannels.get(guildId) : null;
+      const mod = guildId ? getModSettings(guildId) : { enabled: false };
+      const embed = new EmbedBuilder()
+        .setTitle('🛠️ Nexus AI — Admin Panel')
+        .setColor(0x5865f2)
+        .setDescription('Tổng quan nhanh server / bot')
+        .addFields(
+          {
+            name: 'Bot',
+            value:
+              `• Online: **${client.user?.tag || '—'}**\n` +
+              `• Sessions RAM: **${userSessions.size}**\n` +
+              `• Tickets (data): **${ticketN}**`,
+            inline: true,
+          },
+          {
+            name: 'Gemini lock',
+            value: lock.locked
+              ? `🔒 **Đang khóa**\nMở ~**${lock.unlockAtLabel}**\n(~${lock.remainingLabel})`
+              : '✅ Sẵn sàng',
+            inline: true,
+          },
+          {
+            name: 'Server này',
+            value:
+              `• Kênh AI: ${aiCh ? `<#${aiCh}>` : '*chưa /setchannel*'}\n` +
+              `• Moderation: **${mod.enabled ? 'Bật' : 'Tắt'}**\n` +
+              `• Admin log: ${process.env.ADMIN_LOG_CHANNEL_ID ? '✅' : '❌ chưa set'}`,
+            inline: false,
+          },
+          {
+            name: 'Lệnh nhanh',
+            value:
+              '`/setchannel` · `/setup_ticketai` · `/moderation`\n' +
+              '`/clear` · `/clear24h` · `/status` · `/quota`\n' +
+              'Góp ý user: `/feedback`',
+            inline: false,
+          }
+        )
+        .setTimestamp(new Date())
+        .setFooter({ text: 'Nexus AI Admin' });
+      return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
     if (commandName === 'status') {
@@ -1503,7 +1703,10 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  const ticketData = getTicketByChannel(message.channel.id);
+  let ticketData = getTicketByChannel(message.channel.id);
+  if (!ticketData && message.channel && ensureTicketRecord) {
+    ticketData = ensureTicketRecord(message.channel);
+  }
 
   // Bật/tắt chat thoại bằng tin nhắn
   {
@@ -1575,6 +1778,22 @@ client.on('messageCreate', async (message) => {
   }
 
   // Ghim ngữ cảnh ticket: note: ...
+  // Đặt tên AI: name: Luna  |  tên ai: Mây
+  const nameMatch = message.content.trim().match(/^(?:name|tên(?:\s*ai)?)\s*:\s*(.+)$/i);
+  if (nameMatch) {
+    const n = nameMatch[1].trim().slice(0, 40);
+    if (!n || /^reset|default|mặc định|mac dinh$/i.test(n)) {
+      if (ticketData) await setTicketAiName(message.channel.id, null);
+      else setUserAiName(message.author.id, null);
+      return message.reply('✅ Đã reset tên AI về mặc định (Nexus AI).').catch(() => {});
+    }
+    if (ticketData) await setTicketAiName(message.channel.id, n);
+    else setUserAiName(message.author.id, n);
+    return message
+      .reply(`✅ Từ giờ AI xưng / được gọi là **${n}** (không bắt buộc giống Nexus AI).`)
+      .catch(() => {});
+  }
+
   if (ticketData && /^note\s*:/i.test(message.content.trim())) {
     const noteText = message.content.replace(/^note\s*:/i, '').trim();
     if (!noteText) {
@@ -1623,6 +1842,38 @@ client.on('messageCreate', async (message) => {
   if (!isDM && !ticketData && targetChannel && message.channel.id !== targetChannel) return;
   if (!isDM && !ticketData && !targetChannel && !isMentioned) return;
 
+  // Moderation (kênh AI / ticket)
+  try {
+    const isAiCh =
+      !!ticketData ||
+      (message.guildId && allowedChannels.get(message.guildId) === message.channel.id);
+    const modHit = checkMessageModeration(message, { isAiChannel: isAiCh });
+    if (modHit) {
+      adminLog({
+        title: '🛡️ Moderation',
+        description: modHit.reason,
+        color: 0xed4245,
+        fields: [
+          { name: 'User', value: `${message.author.tag} (\`${message.author.id}\`)`, inline: true },
+          { name: 'Kênh', value: `<#${message.channel.id}>`, inline: true },
+          { name: 'Nội dung', value: (message.content || '').slice(0, 200) || '(trống)', inline: false },
+        ],
+      }).catch(() => {});
+      if (modHit.action === 'delete') {
+        await message.delete().catch(() => {});
+        await message.channel
+          .send({ content: `⚠️ <@${message.author.id}> ${modHit.reason}` })
+          .then((m) => setTimeout(() => m.delete().catch(() => {}), 8000))
+          .catch(() => {});
+        return;
+      }
+      await message.reply(`⚠️ ${modHit.reason}`).catch(() => {});
+    }
+  } catch (modErr) {
+    console.warn('moderation', modErr && modErr.message);
+  }
+
+
   const now = Date.now();
   const cooldownAmount = CHAT_COOLDOWN_SECONDS * 1000;
   if (userCooldowns.has(message.author.id)) {
@@ -1643,8 +1894,12 @@ client.on('messageCreate', async (message) => {
   }
 
   // Khóa Gemini chỉ khi dùng KEY BOT — ticket có key riêng vẫn chat được
-  const earlyTicket = getTicketByChannel(message.channel.id);
-  const usingOwnTicketKey = !!(earlyTicket && earlyTicket.userApiKey);
+  const earlyTicket = ticketData || getTicketByChannel(message.channel.id);
+  const usingOwnTicketKey = !!(
+    earlyTicket &&
+    (earlyTicket.userApiKey ||
+      (earlyTicket.providerKeys && Object.keys(earlyTicket.providerKeys).length > 0))
+  );
   if (!usingOwnTicketKey) {
     const geminiLock = getGeminiLockStatus();
     if (geminiLock.locked) {
@@ -1769,14 +2024,25 @@ client.on('messageCreate', async (message) => {
       }
 
       if (!keyForWant) {
-        return message.reply(
-          '⚠️ **Ticket chưa có API key!**\n' +
-            'Nhập key theo model bạn muốn dùng:\n' +
-            helpKeyText()
-        );
-      }
-
-      if (wantProv !== 'gemini') {
+        // Fallback: key Gemini của bot (sau redeploy ticket mất key user)
+        if (aiInstance && (wantProv === 'gemini' || !wantProv)) {
+          activeAi = aiInstance;
+          usingTicketKey = false;
+          selectedModel = selectedModel && providerFromModel(selectedModel) === 'gemini'
+            ? selectedModel
+            : DEFAULT_MODEL;
+        } else if (aiInstance) {
+          activeAi = aiInstance;
+          usingTicketKey = false;
+          selectedModel = DEFAULT_MODEL;
+          wantProv = 'gemini';
+        } else {
+          return message.reply(
+            '⚠️ **Ticket chưa có API key** và bot cũng chưa có GEMINI_API_KEY.\n' +
+              helpKeyText()
+          );
+        }
+      } else if (wantProv !== 'gemini') {
         externalProvider = wantProv;
         externalApiKey = keyForWant;
         usingTicketKey = true;
@@ -1788,8 +2054,13 @@ client.on('messageCreate', async (message) => {
     }
 
     if (!externalProvider && !activeAi) {
-      return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
+      if (aiInstance) {
+        activeAi = aiInstance;
+      } else {
+        return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
+      }
     }
+
 
     // Session tách theo model + persona để đổi tính cách không dính lịch sử cũ
     const personaKeyPart =
@@ -1798,10 +2069,13 @@ client.on('messageCreate', async (message) => {
         : selectedPersona;
     const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}`;
 
+    const aiNameResolved =
+      (ticketData && ticketData.aiName) || userPrefs.aiName || null;
     let systemInstruction = getSystemInstructionForPersona(
       SYSTEM_INSTRUCTION,
       selectedPersona,
-      customPersonaText
+      customPersonaText,
+      aiNameResolved
     );
     if (userPrefs.replyMode === 'strict') {
       systemInstruction += '\n\n' + getStrictModeBlock();
@@ -2219,6 +2493,7 @@ client.on('messageCreate', async (message) => {
     await loadTickets().catch((e) => console.error('Lỗi load tickets:', e));
     await loadSessionsFromFile().catch((e) => console.error('Lỗi load sessions:', e));
     await loadQuota().catch((e) => console.error('Lỗi load quota:', e));
+    await loadModeration().catch((e) => console.error('Lỗi load moderation:', e));
     await loadGeminiLock().catch((e) => console.error('Lỗi load geminiLock:', e));
     await loadUserPrefs().catch((e) => console.error('Lỗi load userPrefs:', e));
     await loadMemory().catch((e) => console.error('Lỗi load memory:', e));
