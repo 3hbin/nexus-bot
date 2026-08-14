@@ -212,7 +212,14 @@ Quy tắc chung:
     body = PERSONA_PRESETS[id].block;
   }
 
-  return [base, nameBlock, body].filter(Boolean).join('\n\n');
+  const formatDiscord = `
+[Định dạng Discord]
+- Không dùng LaTeX ($...$, \\sqrt, \\times, \\approx...). Discord không render math.
+- Công thức viết plain: O(sqrt(n)), n^2, ≈, ≤, ≥, ×, →.
+- Code trong fence markdown.
+`.trim();
+
+  return [base, nameBlock, body, formatDiscord].filter(Boolean).join('\n\n');
 }
 
 /** Tương thích cũ: mặc định persona default */
