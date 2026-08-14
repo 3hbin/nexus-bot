@@ -2,9 +2,10 @@
 // Lưu preference cá nhân (persona ngoài ticket, TTS, mode…)
 const fs = require('fs').promises;
 const path = require('path');
+const { dataFile } = require('./paths.js');
 const { DEFAULT_PERSONA_ID, PERSONA_PRESETS } = require('./Interest.js');
 
-const PREFS_FILE = path.join(__dirname, 'data', 'userPrefs.json');
+const PREFS_FILE = dataFile('userPrefs.json');
 
 /** @type {Map<string, { selectedPersona?: string, customPersonaText?: string|null, ttsEnabled?: boolean, replyMode?: string }>} */
 let prefs = new Map();
@@ -63,6 +64,7 @@ function getUserPrefs(userId) {
       replyMode: 'normal', // normal | strict
       voiceChat: false,
       aiName: null,
+      geminiApiKey: null, // DM chat — key Gemini của user
     }
   );
 }
@@ -115,6 +117,22 @@ function setUserAiName(userId, name) {
   return cur;
 }
 
+/** Key Gemini cho chat DM (null = xóa) */
+function setUserGeminiKey(userId, apiKey) {
+  const id = String(userId);
+  const cur = { ...getUserPrefs(id) };
+  const k = String(apiKey || '').trim();
+  cur.geminiApiKey = k.length >= 12 ? k : null;
+  prefs.set(id, cur);
+  scheduleSave();
+  return cur;
+}
+
+function getUserGeminiKey(userId) {
+  const k = getUserPrefs(userId).geminiApiKey;
+  return k && String(k).trim().length >= 12 ? String(k).trim() : null;
+}
+
 function personaDisplayName(personaId, customText) {
   if (personaId === 'custom') {
     const t = (customText || '').trim();
@@ -141,6 +159,8 @@ module.exports = {
   setUserReplyMode,
   setUserVoiceChat,
   setUserAiName,
+  setUserGeminiKey,
+  getUserGeminiKey,
   personaDisplayName,
   getStrictModeBlock,
   saveUserPrefsNow,
