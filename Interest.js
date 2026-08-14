@@ -275,13 +275,40 @@ function handleInterestQuery(prompt) {
 // 3. TOXIC SHIELD (Cải tiến xử lý teencode/ký tự chèn)
 // ==========================================
 
+// Pattern cũ đ*m quá rộng → dính "đêm", "điểm", "đảm"... (false positive)
 const TOXIC_PATTERNS = [
-  /đ[áàảãạâấầẩẫậeéèẻẽẹêếềểễệiíìỉĩịoóòỏõọôốồổỗộơớờởỡợuúùủũụưứừửữựyýỳỷỹỵ\s._-]*m/i,
-  /d[áàảãạâấầẩẫậeéèẻẽẹêếềểễệiíìỉĩịoóòỏõọôốồổỗộơớờởỡợuúùủũụưứừửữựyýỳỷỹỵ\s._-]*m/i,
-  /v[c\s._-]*l/i,
-  /c[l\s._-]*m/i,
-  /đéo|deo|địt|dit|lồn|l0n|cặc|cak|buồi|óc chó|ngu như chó/i,
-  /\b(fuck|shit|bitch|asshole)\b/i,
+  // Chửi rõ / teencode (word-ish)
+  /(?:^|[^a-zà-ỹ])đ[\s._-]*m(?:ẹ|ẹe|ẹe+|áy|ày)?(?:[^a-zà-ỹ]|$)/i,
+  /(?:^|[^a-zà-ỹ])đm(?:ẹ|áy)?(?:[^a-zà-ỹ]|$)/i,
+  /(?:^|[^a-zà-ỹ])đmm+(?:[^a-zà-ỹ]|$)/i,
+  /(?:^|[^a-zà-ỹ])d[\s._-]*m(?:ẹ)?(?:[^a-zà-ỹ]|$)/i,
+  /(?:^|[^a-zà-ỹ])vcl(?:[^a-zà-ỹ]|$)/i,
+  /(?:^|[^a-zà-ỹ])vl(?:[^a-zà-ỹ]|$)/i,
+  /(?:^|[^a-zà-ỹ])clm(?:[^a-zà-ỹ]|$)/i,
+  /đéo|\bdeo\b|địt|\bdit\b|lồn|l0n|cặc|\bcak\b|buồi|óc\s*chó|ngu\s*như\s*chó/i,
+  /\b(fuck|shit|bitch|asshole|motherfucker)\b/i,
+  /đĩ\s*mẹ|con\s*chó\s*này|mày\s*là\s*chó/i,
+];
+
+const TOXIC_SAFE_WORDS = [
+  /\bđêm\b/i,
+  /\bđiểm\b/i,
+  /\bđảm\b/i,
+  /\bđúng\b/i,
+  /\bđường\b/i,
+  /\bđộng\b/i,
+  /\bđầu\b/i,
+  /\bđọc\b/i,
+  /\bđược\b/i,
+  /\bđến\b/i,
+  /\bđặt\b/i,
+  /\bđịnh\b/i,
+  /\bđơn\b/i,
+  /\bđội\b/i,
+  /\bđếm\b/i,
+  /\bdemo\b/i,
+  /\bdomain\b/i,
+  /\badmin\b/i,
 ];
 
 const TOXIC_REPLIES = [
@@ -294,9 +321,21 @@ const TOXIC_REPLIES = [
 
 function handleToxicBehavior(prompt) {
   if (!prompt) return null;
-  const normalized = prompt.toLowerCase();
-  const isToxic = TOXIC_PATTERNS.some((pattern) => pattern.test(normalized));
-  if (!isToxic) return null;
+  const normalized = String(prompt).toLowerCase();
+
+  // Câu chỉ có từ bình thường + không có chửi rõ → bỏ qua
+  const hasToxic = TOXIC_PATTERNS.some((pattern) => pattern.test(normalized));
+  if (!hasToxic) return null;
+
+  // Nếu match chỉ vì từ an toàn lẫn trong pattern cũ — double-check: phải có token chửi thật
+  const strong =
+    /(?:^|[^a-zà-ỹ])(đm|đmm+|vcl|\bvl\b|clm|đéo|địt|lồn|l0n|cặc|buồi|fuck|shit|bitch|asshole)(?:[^a-zà-ỹ]|$)/i.test(
+      normalized
+    ) ||
+    /óc\s*chó|ngu\s*như\s*chó|đĩ\s*mẹ|motherfucker/i.test(normalized);
+
+  if (!strong) return null;
+
   return TOXIC_REPLIES[Math.floor(Math.random() * TOXIC_REPLIES.length)];
 }
 
