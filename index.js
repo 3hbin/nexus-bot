@@ -1021,17 +1021,26 @@ client.on('interactionCreate', async (interaction) => {
         const up = getUserPrefs(interaction.user.id);
         selectedPersona = up.selectedPersona || DEFAULT_PERSONA_ID;
         customPersonaText = up.customPersonaText || null;
-        if (ticketData?.userApiKey) {
-          activeAi = new GoogleGenAI({ apiKey: ticketData.userApiKey });
+        if (ticketData) {
+          const pk = { ...(ticketData.providerKeys || {}) };
+          if (ticketData.userApiKey && !pk.gemini) pk.gemini = ticketData.userApiKey;
+          const hasAny = Object.values(pk).some(Boolean);
+          if (!hasAny) {
+            return interaction.editReply(
+              '🔑 **Ticket chưa có API key** — nhập `key gemini: ...` (hoặc chatgpt/claude/grok/deepseek) trước.'
+            );
+          }
+          if (pk.gemini) {
+            activeAi = new GoogleGenAI({ apiKey: pk.gemini });
+          }
           selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
           selectedPersona = ticketData.selectedPersona || selectedPersona;
           customPersonaText = ticketData.customPersonaText || customPersonaText;
         }
-        if (!activeAi) {
+        if (!activeAi && !ticketData) {
           return interaction.editReply('❌ Chưa có GEMINI_API_KEY.');
         }
-        // Regenerate: chỉ check lock bot khi không dùng key ticket
-        if (!(ticketData && ticketData.userApiKey)) {
+        if (!(ticketData && (ticketData.userApiKey || (ticketData.providerKeys && Object.values(ticketData.providerKeys).some(Boolean))))) {
           const lock = getGeminiLockStatus();
           if (lock.locked) return interaction.editReply(lock.message);
         }
@@ -2127,24 +2136,12 @@ const toxicReply = handleToxicBehavior(prompt);
       }
 
       if (!keyForWant) {
-        // Fallback: key Gemini của bot (sau redeploy ticket mất key user)
-        if (aiInstance && (wantProv === 'gemini' || !wantProv)) {
-          activeAi = aiInstance;
-          usingTicketKey = false;
-          selectedModel = selectedModel && providerFromModel(selectedModel) === 'gemini'
-            ? selectedModel
-            : DEFAULT_MODEL;
-        } else if (aiInstance) {
-          activeAi = aiInstance;
-          usingTicketKey = false;
-          selectedModel = DEFAULT_MODEL;
-          wantProv = 'gemini';
-        } else {
-          return message.reply(
-            '⚠️ **Ticket chưa có API key** và bot cũng chưa có GEMINI_API_KEY.\n' +
-              helpKeyText()
-          );
-        }
+        // Ticket BẮT BUỘC có key user — không dùng key bot (tránh chat free ngoài ý muốn)
+        return message.reply(
+          '🔑 **Ticket chưa có API key** — nhập key trước rồi chat nhé.\n\n' +
+            helpKeyText() +
+            '\n\nVí dụ: `key gemini: AIza...` hoặc `key chatgpt: sk-...`'
+        );
       } else if (wantProv !== 'gemini') {
         externalProvider = wantProv;
         externalApiKey = keyForWant;
