@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const express = require('express');
 const path = require('path');
+const { DATA_DIR, dataFile } = require('./paths.js');
 const fs = require('fs').promises;
 
 const {
@@ -61,6 +62,8 @@ const {
 const {
   getSystemInstructionForPersona,
   handleToxicBehavior,
+  detectJailbreakPrompt,
+  getPromptShieldBlock,
   DEFAULT_PERSONA_ID,
 } = require('./Interest.js');
 const {
@@ -368,7 +371,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const ALLOWED_CHANNELS_FILE =
-  process.env.ALLOWED_CHANNELS_FILE || path.join(__dirname, 'data', 'allowedChannels.json');
+  process.env.ALLOWED_CHANNELS_FILE || dataFile('allowedChannels.json');
 
 const CHAT_COOLDOWN_SECONDS = 5;
 const userCooldowns = new Map();
@@ -397,7 +400,8 @@ app.listen(PORT, () => {
 const aiInstance = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 const SYSTEM_INSTRUCTION =
-  'Bạn là Nexus AI — một trợ lý Discord thân thiện, dí dỏm. ' +
+  'Bạn là trợ lý AI trên Discord, thân thiện, dí dỏm. ' +
+  'Tên gọi của bạn do hệ thống chỉ định (thường trùng tên bot). ' +
   'Hãy tự động thêm emoji phù hợp ngữ cảnh khi trả lời. ' +
   'Trả lời ngắn gọn, rõ ràng.';
 
@@ -426,6 +430,19 @@ const client = new Client({
 // ==========================================
 const userSessions = new Map();
 const allowedChannels = new Map();
+
+/** Tên AI: custom user/ticket → không thì đúng tên bot Discord */
+function resolveAiDisplayName(ticketData, userPrefs) {
+  const custom =
+    (ticketData && ticketData.aiName) ||
+    (userPrefs && userPrefs.aiName) ||
+    null;
+  if (custom && String(custom).trim()) return String(custom).trim().slice(0, 40);
+  const u = client.user;
+  if (!u) return 'Nexus AI';
+  return (u.displayName || u.globalName || u.username || 'Nexus AI').slice(0, 40);
+}
+
 
 const PAID_ONLY_MODELS = new Set([
   'gemini-3.1-pro-preview',
@@ -513,7 +530,7 @@ async function loadAllowedChannelsFromFile() {
     console.log(`📂 Loaded allowedChannels from ${ALLOWED_CHANNELS_FILE}`);
   } catch (err) {
     if (err.code === 'ENOENT') {
-      console.log('📂 Khởi tạo file allowedChannels mới.');
+      console.log('📂 allowedChannels: chưa có file trong DATA_DIR — tạo mới (gắn Volume để không mất khi deploy).');
     } else {
       console.error('❌ Error loading allowedChannels:', err);
     }
@@ -756,6 +773,7 @@ const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN || 'none');
 
 client.once('ready', async () => {
   console.log(`✅ Bot ${client.user.tag} đã online!`);
+  console.log(`📂 DATA_DIR = ${DATA_DIR}`);
   try {
     console.log('🔄 Đang đăng ký Slash Commands lên Discord...');
     const body = commands.map((c) =>
@@ -808,11 +826,75 @@ client.once('ready', async () => {
   };
 
   await syncTicketsOnStartup(client).catch((e) => console.error('Lỗi syncTickets:', e));
+
+  // Trạng thái Discord
+  try {
+    await client.user.setPresence({
+      status: 'online',
+      activities: [{ name: 'AI chat · /help', type: 3 }], // Watching
+    });
+  } catch (pe) {
+    console.warn('setPresence', pe && pe.message);
+  }
+
+  const botName = client.user.displayName || client.user.username || client.user.tag;
+  const onlineEmbed = new EmbedBuilder()
+    .setTitle(`🟢 ${botName} đã online`)
+    .setDescription(
+      `Bot vừa **deploy / khởi động** xong.\n` +
+        `• Tag: **${client.user.tag}**\n` +
+        `• Server: **${client.guilds.cache.size}**\n` +
+        `• Gõ \`/help\` hoặc \`help\` để xem lệnh.`
+    )
+    .setColor(0x57f287)
+    .setTimestamp(new Date())
+    .setFooter({ text: botName });
+
+  // 1) Kênh admin log
   await adminLog({
-    title: '🟢 Nexus AI online',
-    description: `Logged in as **${client.user.tag}**`,
+    title: `🟢 ${botName} online`,
+    description: `Logged in as **${client.user.tag}** · ${client.guilds.cache.size} server(s)`,
     color: 0x57f287,
   });
+
+  // 2) Kênh chỉ định ONLINE_ANNOUNCE_CHANNEL_ID (optional)
+  const announceId = (process.env.ONLINE_ANNOUNCE_CHANNEL_ID || '').trim();
+  if (announceId) {
+    try {
+      const ch = await client.channels.fetch(announceId).catch(() => null);
+      if (ch && ch.isTextBased()) {
+        await ch.send({ embeds: [onlineEmbed] }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  // 3) Mỗi server: kênh AI đã /setchannel
+  for (const [guildId, channelId] of allowedChannels.entries()) {
+    if (announceId && channelId === announceId) continue;
+    try {
+      const ch = await client.channels.fetch(channelId).catch(() => null);
+      if (ch && ch.isTextBased()) {
+        await ch
+          .send({
+            embeds: [
+              new EmbedBuilder()
+                .setTitle(`🟢 ${botName} đã online`)
+                .setDescription(
+                  `AI sẵn sàng chat tại kênh này.\n` +
+                    `Gõ \`help\` · \`/persona\` · tạo **Ticket** nếu cần.`
+                )
+                .setColor(0x57f287)
+                .setTimestamp(new Date()),
+            ],
+          })
+          .catch(() => {});
+      }
+    } catch (e) {
+      console.warn('online announce guild', guildId, e && e.message);
+    }
+  }
+
+  console.log(`📢 Đã gửi thông báo online (admin log + ${allowedChannels.size} kênh AI).`);
 });
 
 // ==========================================
@@ -959,7 +1041,8 @@ client.on('interactionCreate', async (interaction) => {
         let systemInstruction = getSystemInstructionForPersona(
           SYSTEM_INSTRUCTION,
           selectedPersona,
-          customPersonaText
+          customPersonaText,
+          resolveAiDisplayName(ticketData || getTicketByChannel(interaction.channelId), getUserPrefs(interaction.user.id))
         );
         if (up.replyMode === 'strict') {
           systemInstruction += '\n\n' + getStrictModeBlock();
@@ -1095,7 +1178,7 @@ client.on('interactionCreate', async (interaction) => {
       if (raw === null || raw === undefined) {
         const ticket = getTicketByChannel(interaction.channelId);
         const up = getUserPrefs(interaction.user.id);
-        const current = (ticket && ticket.aiName) || up.aiName || 'Nexus AI (mặc định)';
+        const current = (ticket && ticket.aiName) || up.aiName || resolveAiDisplayName(ticket, up);
         return interaction.reply({
           content:
             `🏷️ Tên AI hiện tại: **${current}**\n` +
@@ -1111,7 +1194,7 @@ client.on('interactionCreate', async (interaction) => {
         if (inTicket) await setTicketAiName(interaction.channelId, null);
         else setUserAiName(interaction.user.id, null);
         return interaction.reply({
-          content: '✅ Đã reset tên AI về mặc định (Nexus AI).',
+          content: `✅ Đã reset tên AI về **tên bot Discord** (${resolveAiDisplayName(null, {})}).`,
           ephemeral: true,
         });
       }
@@ -1785,7 +1868,7 @@ client.on('messageCreate', async (message) => {
     if (!n || /^reset|default|mặc định|mac dinh$/i.test(n)) {
       if (ticketData) await setTicketAiName(message.channel.id, null);
       else setUserAiName(message.author.id, null);
-      return message.reply('✅ Đã reset tên AI về mặc định (Nexus AI).').catch(() => {});
+      return message.reply(`✅ Đã reset tên AI về **tên bot Discord** (${resolveAiDisplayName(null, {})}).`).catch(() => {});
     }
     if (ticketData) await setTicketAiName(message.channel.id, n);
     else setUserAiName(message.author.id, n);
@@ -1935,7 +2018,27 @@ client.on('messageCreate', async (message) => {
   }
 
   // Toxic shield — chặn lời lẽ xúc phạm trước khi gọi API
-  const toxicReply = handleToxicBehavior(prompt);
+    const jail = detectJailbreakPrompt(prompt);
+  if (jail && jail.blocked) {
+    try {
+      adminLog({
+        title:
+          jail.reason === 'harmful_cyber'
+            ? '🛡️ Prompt Shield — chặn tấn công mạng'
+            : '🛡️ Prompt Shield — chặn jailbreak',
+        description: (prompt || '').slice(0, 500),
+        color: 0xed4245,
+        fields: [
+          { name: 'User', value: `${message.author.tag} (\`${message.author.id}\`)`, inline: true },
+          { name: 'Kênh', value: `<#${message.channel.id}>`, inline: true },
+          { name: 'Mức', value: `${jail.severity}${jail.reason ? ' · ' + jail.reason : ''}`, inline: true },
+        ],
+      }).catch(() => {});
+    } catch (_) {}
+    return message.reply(jail.reply).catch(() => {});
+  }
+
+const toxicReply = handleToxicBehavior(prompt);
   if (toxicReply) {
     adminLog({
       title: '⚠️ Toxic blocked',
@@ -2069,14 +2172,14 @@ client.on('messageCreate', async (message) => {
         : selectedPersona;
     const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}`;
 
-    const aiNameResolved =
-      (ticketData && ticketData.aiName) || userPrefs.aiName || null;
+    const aiNameResolved = resolveAiDisplayName(ticketData, userPrefs);
     let systemInstruction = getSystemInstructionForPersona(
       SYSTEM_INSTRUCTION,
       selectedPersona,
       customPersonaText,
       aiNameResolved
     );
+    systemInstruction += '\n\n' + getPromptShieldBlock();
     if (userPrefs.replyMode === 'strict') {
       systemInstruction += '\n\n' + getStrictModeBlock();
     }
@@ -2485,7 +2588,7 @@ client.on('messageCreate', async (message) => {
 // ==========================================
 (async () => {
   try {
-    const dataDir = path.join(__dirname, 'data');
+    const dataDir = DATA_DIR;
     await fs.mkdir(dataDir, { recursive: true }).catch(() => {});
 
     await loadAllowedChannelsFromFile().catch((e) => console.error('Lỗi load allowedChannels:', e));
