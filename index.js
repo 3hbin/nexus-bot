@@ -193,7 +193,7 @@ function buildHelpEmbed() {
       },
       {
         name: '📎 Ảnh',
-        value: 'Gửi ảnh trong ticket/kênh AI để bot **xem & mô tả** (Gemini Vision).',
+        value: 'Gửi **ảnh / video** (≤15MB) trong ticket/kênh AI để bot xem & mô tả (Gemini).',
       }
     )
     .setFooter({ text: 'Nexus AI' });
@@ -2256,19 +2256,31 @@ client.on('messageCreate', async (message) => {
     const name = (a.name || '').toLowerCase();
     return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(name);
   });
-  // Tin nhắn thoại Discord / file audio
+  // Tin nhắn thoại Discord / file audio (webm có thể là video — ưu tiên video nếu contentType video)
   const audioAtts = Array.from(message.attachments?.values?.() || []).filter((a) => {
     const ct = (a.contentType || '').toLowerCase();
     const name = (a.name || '').toLowerCase();
+    if (ct.startsWith('video/')) return false;
+    if (/\.(mp4|mov|mkv|avi)$/i.test(name)) return false;
     return (
       ct.startsWith('audio/') ||
       ct.includes('ogg') ||
       ct.includes('voice') ||
-      /\.(ogg|mp3|wav|m4a|webm|opus)$/i.test(name)
+      /\.(ogg|mp3|wav|m4a|opus)$/i.test(name) ||
+      (/\.webm$/i.test(name) && !ct.startsWith('video/'))
+    );
+  });
+  // Video đính kèm (Gemini multimodal)
+  const videoAtts = Array.from(message.attachments?.values?.() || []).filter((a) => {
+    const ct = (a.contentType || '').toLowerCase();
+    const name = (a.name || '').toLowerCase();
+    return (
+      ct.startsWith('video/') ||
+      /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(name)
     );
   });
 
-  if (!prompt && imageAtts.length === 0 && audioAtts.length === 0) {
+  if (!prompt && imageAtts.length === 0 && audioAtts.length === 0 && videoAtts.length === 0) {
     try {
       if (isDM) {
         {
@@ -2284,7 +2296,7 @@ client.on('messageCreate', async (message) => {
           );
         }
       } else {
-        await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi chữ, ảnh hoặc **tin nhắn thoại**)');
+        await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi **chữ**, **ảnh**, **video** hoặc **tin nhắn thoại**)');
       }
     } catch (err) {}
     return;
@@ -2628,7 +2640,67 @@ const toxicReply = handleToxicBehavior(prompt);
       }
     }
 
-    // Payload multimodal: text + ảnh/audio
+    // Tải video đính kèm (tối đa 1 file, ≤ 15MB — inline Gemini)
+    let videoTooLarge = false;
+    if (videoAtts.length > 0) {
+      const fetchFn =
+        typeof globalThis.fetch === 'function'
+          ? globalThis.fetch
+          : (() => {
+              try {
+                return require('node-fetch');
+              } catch {
+                return null;
+              }
+            })();
+      const att = videoAtts[0];
+      const maxVid = 15 * 1024 * 1024;
+      if (att.size && att.size > maxVid) {
+        videoTooLarge = true;
+      } else if (fetchFn) {
+        try {
+          const res = await fetchFn(att.url, {
+            headers: { 'User-Agent': 'NexusAI-DiscordBot/1.0' },
+          });
+          if (res.ok) {
+            const arr = await res.arrayBuffer();
+            if (arr && arr.byteLength > maxVid) {
+              videoTooLarge = true;
+            } else if (arr && arr.byteLength >= 256) {
+              const b64 = Buffer.from(arr).toString('base64');
+              let mime = (att.contentType || 'video/mp4').split(';')[0].trim();
+              if (!mime.startsWith('video/')) {
+                if (/\.webm$/i.test(att.name || '')) mime = 'video/webm';
+                else if (/\.mov$/i.test(att.name || '')) mime = 'video/quicktime';
+                else mime = 'video/mp4';
+              }
+              visionParts.push({ inlineData: { mimeType: mime, data: b64 } });
+              if (!String(textPart).trim() || textPart === prompt) {
+                textPart =
+                  (prompt && prompt.trim()) ||
+                  '[User gửi file video. Hãy xem video, mô tả nội dung chính, nhân vật/hành động, và trả lời tiếng Việt rõ ràng. Nếu user hỏi gì thì trả lời đúng câu hỏi.]';
+              }
+            }
+          }
+        } catch (vidErr) {
+          console.warn('Tải video lỗi:', vidErr && vidErr.message);
+        }
+      }
+      if (videoTooLarge) {
+        return message.reply(
+          '🎬 Video hơi nặng (giới hạn xem ~**15MB**).\n' +
+            'Thử: nén video, cắt ngắn hơn, hoặc gửi **ảnh** / mô tả bằng chữ.'
+        ).catch(() => {});
+      }
+      if (videoAtts.length && !visionParts.some((p) => p.inlineData && String(p.inlineData.mimeType || '').startsWith('video/'))) {
+        // tải fail
+        if (!prompt && imageAtts.length === 0 && audioAtts.length === 0) {
+          return message.reply('❌ Không tải được video. Thử gửi lại hoặc dùng file nhỏ hơn.').catch(() => {});
+        }
+      }
+    }
+
+    // Payload multimodal: text + ảnh/audio/video
     let messagePayload;
     if (visionParts.length > 0) {
       messagePayload = [{ text: textPart }, ...visionParts];
@@ -2638,8 +2710,24 @@ const toxicReply = handleToxicBehavior(prompt);
 
     let result;
     try {
+      // Ảnh / video / audio multimodal → ưu tiên Gemini (provider ngoài không nhận đủ file)
+      const hasVisionMedia = visionParts.some(
+        (p) => p && p.inlineData && p.inlineData.mimeType
+      );
+      if (hasVisionMedia && externalProvider) {
+        if (activeAi) {
+          externalProvider = null;
+          externalApiKey = null;
+        } else {
+          return message.reply(
+            '📎 File media (ảnh/video/audio) cần **key Gemini** trong ticket.\n' +
+              'Gửi: `key gemini: AIza...` rồi gửi lại file.\n' +
+              '_(ChatGPT/Claude/Grok/DeepSeek chưa xem được video trong bot này)_'
+          ).catch(() => {});
+        }
+      }
       if (externalProvider && externalApiKey) {
-        // ChatGPT / Claude / Grok / DeepSeek — không qua Gemini SDK
+        // ChatGPT / Claude / Grok / DeepSeek — text only
         let history = [];
         try {
           history = getSavedHistory(sessionKey) || [];
