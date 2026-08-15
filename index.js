@@ -799,7 +799,67 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('kb')
-    .setDescription('Training / Knowledge Base — xem hướng dẫn tự chỉnh'),
+    .setDescription('Training / Knowledge Base — dạy bot nhớ fact')
+    .addSubcommand((sc) =>
+      sc
+        .setName('add')
+        .setDescription('Thêm tri thức (train)')
+        .addStringOption((opt) =>
+          opt.setName('noidung').setDescription('Nội dung cần bot nhớ').setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName('phamvi')
+            .setDescription('Cá nhân / server / global')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Cá nhân (mặc định)', value: 'user' },
+              { name: 'Server (cần Admin)', value: 'guild' },
+              { name: 'Global (chủ bot)', value: 'global' }
+            )
+        )
+    )
+    .addSubcommand((sc) =>
+      sc.setName('list').setDescription('Xem Knowledge Base đã lưu')
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName('del')
+        .setDescription('Xóa mục theo từ khóa hoặc số thứ tự')
+        .addStringOption((opt) =>
+          opt.setName('tukhoa').setDescription('Từ khóa hoặc số (vd: 1)').setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName('phamvi')
+            .setDescription('Cá nhân / server / global')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Cá nhân (mặc định)', value: 'user' },
+              { name: 'Server (cần Admin)', value: 'guild' },
+              { name: 'Global (chủ bot)', value: 'global' }
+            )
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName('clear')
+        .setDescription('Xóa hết KB theo phạm vi')
+        .addStringOption((opt) =>
+          opt
+            .setName('phamvi')
+            .setDescription('Cá nhân / server / global')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Cá nhân (mặc định)', value: 'user' },
+              { name: 'Server (cần Admin)', value: 'guild' },
+              { name: 'Global (chủ bot)', value: 'global' }
+            )
+        )
+    )
+    .addSubcommand((sc) =>
+      sc.setName('help').setDescription('Hướng dẫn Training / KB')
+    ),
   new SlashCommandBuilder()
     .setName('feedback')
     .setDescription('Góp ý / báo lỗi — gửi tới kênh admin log')
@@ -1300,6 +1360,73 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === 'kb') {
+      const sub = interaction.options.getSubcommand();
+      const scopeOpt = interaction.options.getString('phamvi') || 'user';
+      const member = interaction.member;
+      const isAdmin =
+        member &&
+        member.permissions &&
+        typeof member.permissions.has === 'function' &&
+        member.permissions.has(PermissionFlagsBits.Administrator);
+      const owner = isBotOwner(interaction.user.id);
+
+      const guardScope = (scope) => {
+        if (scope === 'guild') {
+          if (!interaction.guildId) return '❌ KB server chỉ dùng trong server.';
+          if (!isAdmin) return '❌ Chỉ **Admin server** mới sửa KB server.';
+        }
+        if (scope === 'global' && !owner) {
+          return '❌ Chỉ **chủ bot** (`ADMIN_USER_IDS`) mới sửa KB global.';
+        }
+        return null;
+      };
+
+      if (sub === 'help') {
+        return interaction.reply({ content: helpKnowledgeText(), ephemeral: true });
+      }
+      if (sub === 'list') {
+        const text = listKnowledge({
+          scope: 'all',
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+        }).slice(0, 1900);
+        return interaction.reply({ content: text, ephemeral: true });
+      }
+      if (sub === 'add') {
+        const noidung = interaction.options.getString('noidung');
+        const err = guardScope(scopeOpt);
+        if (err) return interaction.reply({ content: err, ephemeral: true });
+        const r = addKnowledge({
+          scope: scopeOpt,
+          text: noidung,
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+          by: interaction.user.id,
+        });
+        return interaction.reply({ content: r.message, ephemeral: true });
+      }
+      if (sub === 'del') {
+        const tukhoa = interaction.options.getString('tukhoa');
+        const err = guardScope(scopeOpt);
+        if (err) return interaction.reply({ content: err, ephemeral: true });
+        const r = deleteKnowledge({
+          scope: scopeOpt,
+          keyword: tukhoa,
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+        });
+        return interaction.reply({ content: r.message, ephemeral: true });
+      }
+      if (sub === 'clear') {
+        const err = guardScope(scopeOpt);
+        if (err) return interaction.reply({ content: err, ephemeral: true });
+        const r = clearKnowledge({
+          scope: scopeOpt,
+          guildId: interaction.guildId,
+          userId: interaction.user.id,
+        });
+        return interaction.reply({ content: r.message, ephemeral: true });
+      }
       return interaction.reply({ content: helpKnowledgeText(), ephemeral: true });
     }
 
