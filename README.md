@@ -1,11 +1,11 @@
 # Nexus AI — Discord Bot
 
-Bot Discord AI đa nhà cung cấp (**Node.js** + **discord.js v14**).
+Bot Discord AI (**Node.js** + **discord.js v14**) — chat kênh AI / ticket / DM / mention.
 
-Chat kênh AI / ticket / mention · nhiều model · persona · đặt tên AI · memory · dịch · voice · GIF · quota · moderation · admin panel.
+Hỗ trợ **Gemini · ChatGPT · Claude · Grok · DeepSeek**, persona, Training/KB, TTS, voice, GIF, quota, moderation, Prompt Shield.
 
 > **Bảo mật:** Không commit `.env`. Token & API key chỉ đặt trên host (Railway, VPS…).  
-> Key trong ticket chỉ lưu server bot — không public repo.
+> Key trong ticket / DM chỉ lưu trên server bot — không public repo.
 
 ---
 
@@ -17,16 +17,19 @@ Chat kênh AI / ticket / mention · nhiều model · persona · đặt tên AI �
 4. [Cài đặt & chạy](#cài-đặt--chạy)
 5. [Biến môi trường](#biến-môi-trường)
 6. [Railway Volume (không mất data)](#railway-volume-không-mất-data)
-7. [Chỉnh sở thích & tên AI](#chỉnh-sở-thích--tên-ai)
-8. [Ticket — key & model](#ticket--key--model)
-9. [Danh sách lệnh](#danh-sách-lệnh)
-10. [Tin nhắn đặc biệt](#tin-nhắn-đặc-biệt)
-11. [Voice & GIF](#voice--gif)
-12. [Admin & an toàn](#admin--an-toàn)
-13. [Thông báo online](#thông-báo-online)
-14. [Mời bot / chia sẻ](#mời-bot--chia-sẻ)
-15. [Cấu trúc code](#cấu-trúc-code)
-16. [Xử lý lỗi thường gặp](#xử-lý-lỗi-thường-gặp)
+7. [Chat ở đâu?](#chat-ở-đâu)
+8. [DM — key Gemini bắt buộc](#dm--key-gemini-bắt-buộc)
+9. [Ticket — key & model](#ticket--key--model)
+10. [Persona & tên AI](#persona--tên-ai)
+11. [Training / Knowledge Base](#training--knowledge-base)
+12. [Memory](#memory)
+13. [Auto-speech / TTS](#auto-speech--tts)
+14. [Voice & GIF](#voice--gif)
+15. [Danh sách lệnh slash](#danh-sách-lệnh-slash)
+16. [Tin nhắn đặc biệt](#tin-nhắn-đặc-biệt)
+17. [Admin & an toàn](#admin--an-toàn)
+18. [Cấu trúc code](#cấu-trúc-code)
+19. [Xử lý lỗi thường gặp](#xử-lý-lỗi-thường-gặp)
 
 ---
 
@@ -49,24 +52,26 @@ Repo **private** → người khác không tải được. Chỉ muốn người
 
 | Nhóm | Chi tiết |
 |------|----------|
-| **Chat AI** | Kênh AI (`/setchannel`), ticket, mention, DM; xem ảnh; tin nhắn thoại |
-| **Đa provider** | Gemini · ChatGPT · Claude · Grok · DeepSeek (key + model trong ticket) |
-| **Ticket** | Model, persona, multi-key, `note:`, đóng ticket + tóm tắt admin |
-| **Persona** | Preset (Nexus, Luna, Gemini, Claude, Grok, Dola, Copilot, DeepSeek) + tùy chỉnh |
-| **Tên AI** | Mặc định = **tên bot Discord**; hoặc `name: Luna` / `/ainame` |
+| **Chat AI** | `/setchannel`, ticket, mention, **DM** (cần key Gemini user) |
+| **Đa provider** | Gemini · ChatGPT · Claude · Grok · DeepSeek (key + model trong **ticket**) |
+| **Ticket** | Model, persona, multi-key, `note:`, đóng + tóm tắt admin |
+| **DM** | Chỉ Gemini, model **mặc định** (`gemini-3.6-flash`), bắt buộc `key gemini:` |
+| **Persona** | Preset (Nexus, Luna/ChatGPT, Gemini, Claude, Grok, Dola, Copilot, DeepSeek) + tùy chỉnh |
+| **Tên AI** | Mặc định = **tên bot Discord**; `name: Luna` / `/ainame` |
+| **Training / KB** | `train:` · `kb add:` · guild / global — tự chỉnh tri thức |
 | **Memory** | `remember:` · `memory` · `forget:` |
+| **Auto-speech / TTS** | `/auto-speech` · `/tts` · tin nhắn `auto-speech mode: on` |
 | **Dịch** | `/dich`, `dịch:`, nút **Dịch** (tách tin dài) |
 | **Code dài** | Đưa **link paste**, không bắt tải file nặng |
-| **Trả lời dài** | Tự tách `(1/n)` |
+| **Trả lời dài** | Tự tách `(1/n)` · công thức **không LaTeX** (Discord) |
 | **GIF** | Cảm xúc + `gif: từ khóa` (cần `GIPHY_API_KEY`) |
-| **Voice / TTS** | `/voice`, `/speak`, `voicechat on` (host free có thể chỉ MP3) |
-| **Quota** | Hạn mức chat/ảnh/video theo ngày; cảnh báo khi còn ≤10% |
+| **Voice** | `/voice`, `/speak`, `/voicechat` (host free có thể chỉ MP3) |
+| **Quota** | Hạn mức chat/ảnh/video theo ngày; cảnh báo ≤10% |
 | **Welcome DM** | Member mới → DM hướng dẫn (cần Server Members Intent) |
-| **Moderation** | `/moderation` — spam lặp + link đáng ngờ (kênh AI/ticket) |
-| **Prompt Shield** | Chặn jailbreak / “ignore instructions” / đòi system prompt (kiểu TikTok) |
-| **Feedback** | `/feedback` → kênh admin log |
-| **Admin panel** | `/adminpanel` — online, ticket, Gemini lock, lệnh nhanh |
-| **Online announce** | Tin 🟢 sau deploy → admin log + kênh AI |
+| **Moderation** | `/moderation` — spam / link đáng ngờ (kênh AI · ticket) |
+| **Prompt Shield** | Chặn jailbreak / deity mode / đòi system prompt (kiểu TikTok) |
+| **Feedback** | `/feedback` → admin log |
+| **Admin panel** | `/adminpanel` |
 | **Khác** | `/ask`, `/summary`, `/export`, `/quiz`, `/ship`, `/remind`, nút 👍👎 · Trả lời lại |
 
 Gõ **`help`** hoặc **`/help`**.
@@ -77,189 +82,117 @@ Gõ **`help`** hoặc **`/help`**.
 
 - **Node.js 18+**
 - [Discord Developer Portal](https://discord.com/developers/applications)
-- Ít nhất `GEMINI_API_KEY` (khuyên) để bot chat mặc định
-- (Tuỳ chọn) Giphy, OpenAI, Anthropic, xAI, DeepSeek cho ticket
+- Ít nhất một API key (Gemini khuyến nghị cho admin bot)
 
-### Intent Discord (Bot settings)
+**Discord Privileged Intents** (bật trong Portal):
 
-| Intent | Bắt buộc? |
-|--------|-----------|
-| **Message Content Intent** | Có |
-| **Server Members Intent** | Có nếu dùng Welcome DM |
-| Presence (optional) | Không |
-
-### Quyền bot gợi ý
-
-Send Messages · Embed Links · Attach Files · Read Message History · Manage Channels (ticket) · Manage Messages (clear/mod) · Connect · Speak (voice)
+- Message Content Intent  
+- Server Members Intent (welcome DM)  
+- Presence không bắt buộc  
 
 ---
 
 ## Cài đặt & chạy
 
-### Clone
+### 1. Local
 
 ```bash
 git clone https://github.com/3hbin/nexus-bot.git
 cd nexus-bot
 npm install
-```
-
-### Hoặc ZIP
-
-1. Tải [nexus-bot-main.zip](https://github.com/3hbin/nexus-bot/archive/refs/heads/main.zip)
-2. Giải nén → `cd nexus-bot-main`
-3. `npm install`
-
-### Chạy local
-
-```bash
-cp .env.example .env   # nếu có
-# sửa .env
+cp .env.example .env   # nếu có — hoặc tạo .env
+# Điền DISCORD_TOKEN, GEMINI_API_KEY
 npm start
 ```
 
-### Railway
+### 2. Railway (khuyên dùng)
 
-1. New Project → Deploy from GitHub  
-2. Variables (xem bên dưới)  
-3. **Volume** mount `/data` + `DATA_DIR=/data`  
-4. Start: `npm start`  
-5. Log: `Bot … đã online` · `📂 DATA_DIR = /data`
+1. New Project → Deploy from GitHub (repo của bạn)  
+2. **Variables** → thêm env (bảng bên dưới)  
+3. **Volume** (quan trọng) → xem mục [Railway Volume](#railway-volume-không-mất-data)  
+4. Deploy → xem log: `Bot ... đã online!` và `DATA_DIR = /data`
+
+### 3. Discord Bot
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) → New Application  
+2. Bot → Reset Token → copy `DISCORD_TOKEN`  
+3. OAuth2 → URL Generator → scopes: `bot`, `applications.commands`  
+4. Permissions gợi ý: Send Messages, Embed Links, Attach Files, Read Message History, Manage Channels (ticket), Connect + Speak (voice)  
+5. Mời bot vào server  
 
 ---
 
 ## Biến môi trường
 
-```env
-# Bắt buộc
-DISCORD_TOKEN=
-GEMINI_API_KEY=
+| Biến | Bắt buộc | Mô tả |
+|------|----------|--------|
+| `DISCORD_TOKEN` | ✅ | Token bot Discord |
+| `GEMINI_API_KEY` | Khuyên | Key Gemini **admin bot** (kênh AI / mention fallback) |
+| `DATA_DIR` | Khuyên Railway | Đường dẫn volume, ví dụ `/data` |
+| `GIPHY_API_KEY` | Không | GIF (`gif:`) — [developers.giphy.com](https://developers.giphy.com) |
+| `ADMIN_USER_IDS` | Không | Discord user ID chủ bot (cách nhau dấu phẩy) — KB global |
+| `ADMIN_LOG_CHANNEL_ID` | Không | Kênh log admin (ticket đóng, moderation, feedback) |
+| `ONLINE_ANNOUNCE_CHANNEL_ID` | Không | Kênh báo bot online sau deploy |
+| `PORT` | Không | Mặc định `3000` (keep-alive Express) |
 
-# Tuỳ chọn
-GIPHY_API_KEY=
-ADMIN_LOG_CHANNEL_ID=
-ONLINE_ANNOUNCE_CHANNEL_ID=
-
-# Data bền (Railway Volume)
-DATA_DIR=/data
-
-# Hạn mức / ngày (mặc định trong code nếu bỏ trống)
-QUOTA_CHAT_PER_DAY=80
-QUOTA_IMAGE_PER_DAY=12
-QUOTA_VIDEO_PER_DAY=3
-
-# Tuỳ chọn nâng cao
-ALLOWED_CHANNELS_FILE=
-SESSIONS_FILE=
-PORT=8080
-```
-
-| Biến | Việc |
-|------|------|
-| `DISCORD_TOKEN` | Token bot |
-| `GEMINI_API_KEY` | Key server — chat mặc định / fallback ticket |
-| `GIPHY_API_KEY` | GIF thật |
-| `ADMIN_LOG_CHANNEL_ID` | Log online, ticket đóng, feedback, mod |
-| `ONLINE_ANNOUNCE_CHANNEL_ID` | Thêm 1 kênh nhận tin online |
-| `DATA_DIR` | Thư mục JSON bền (`/data` trên Railway) |
-
-Ticket có thể dùng **key user** (ChatGPT/Claude/…) — không bắt buộc set sẵn trên server.
+**Không** commit key lên GitHub.
 
 ---
 
 ## Railway Volume (không mất data)
 
-Không gắn Volume → mỗi deploy **xóa** ticket, setchannel, memory…
+Mỗi lần redeploy **không có Volume** → mất ticket, setchannel, session, KB, prefs.
 
-1. Service → **Settings** → **Volumes** → **Add Volume**  
-2. **Mount path:** `/data`  
-3. Variable: `DATA_DIR=/data`  
+1. Railway project → **Volumes** → Add Volume  
+2. Mount path: **`/data`**  
+3. Variables: `DATA_DIR=/data`  
 4. Redeploy  
 
-Log đúng:
+Data lưu trong `/data`:
 
-```text
-📂 DATA_DIR = /data
-```
-
-| File trong DATA_DIR | Nội dung |
-|---------------------|----------|
-| `allowedChannels.json` | `/setchannel` |
-| `tickets.json` | Ticket, key, persona, tên AI |
-| `userPrefs.json` | Persona / TTS / tên AI user |
-| `userMemory.json` | `remember:` |
-| `sessions.json` | Lịch sử chat |
-| `quota.json` | Hạn mức ngày |
-| `moderation.json` | Bật/tắt mod |
-| `autoClearChannels.json` | `/clear24h` |
-| `geminiLock.json` | Khóa khi 429 |
-
-Lần đầu Volume trống vẫn “tạo mới” **một lần**. Deploy sau **giữ data**.
+- `tickets.json`, `allowedChannels.json`, `sessions.json`  
+- `userPrefs.json`, `userMemory.json`, `knowledgeBase.json`  
+- `autoClearChannels.json`, quota, moderation…
 
 ---
 
-## Chỉnh sở thích & tên AI
+## Chat ở đâu?
 
-### Persona (gu nói)
+| Nơi | Cách hoạt động |
+|-----|----------------|
+| **Kênh AI** | Admin `/setchannel` → chat không cần mention |
+| **Mention** | `@Nexus AI ...` ở kênh khác |
+| **Ticket** | Panel ticket → user nhập **key** (Gemini/ChatGPT/…) + chọn model/persona |
+| **DM** | Tin nhắn riêng bot → **bắt buộc** `key gemini:` của user, model mặc định |
 
-**Trong ticket:** menu **Chọn sở thích AI** → preset hoặc **Tùy chỉnh** (viết mô tả).
+---
 
-**Ngoài ticket:**
+## DM — key Gemini bắt buộc
 
-```text
-/persona style:…
-/persona style:Tùy chỉnh custom:Nói Gen Z, thích anime, trả lời ngắn
-```
-
-### Tên gọi AI
-
-| Ưu tiên | Tên |
-|---------|-----|
-| 1 | User đặt |
-| 2 | **Tên bot Discord** |
-| 3 | Fallback Nexus AI |
+Chat DM **không dùng ticket**, **không dùng key bot**.
 
 ```text
-name: Luna
-tên ai: Mây
-/ainame name:Luna
-/ainame name:reset
+key gemini: AIza...
 ```
 
-- Trong **ticket** → tên theo kênh ticket  
-- Ngoài ticket → tên theo **user**
+Lấy key: https://aistudio.google.com  
 
-### Ghim ngữ cảnh ticket
+| Lệnh tin nhắn | Ý nghĩa |
+|---------------|---------|
+| `key gemini: AIza...` | Lưu key |
+| `keys` | Đã lưu key chưa |
+| `key gemini: xóa` | Xóa key |
+| `help` | Hướng dẫn |
 
-```text
-note: Đang học Toán 12, giải thích từng bước
-```
-
-### Memory dài hạn
-
-```text
-remember: Tên mình là Nam, thích Valorant
-memory
-forget: Valorant
-```
-
-### Persona ≠ Model ≠ Key
-
-| | Ý nghĩa |
-|--|---------|
-| **Persona** | Cách nói / tính cách |
-| **Model** | Engine (Gemini, GPT-5, Grok 4.6…) |
-| **Key** | API key đúng nhà cung cấp |
-
-Có thể model Gemini + persona Grok (gu nói Grok, vẫn chạy Gemini). Model GPT/Claude/Grok **thật** cần **key đúng hãng**.
+- Model: **mặc định** (`gemini-3.6-flash`) — **không chọn model** trong DM  
+- Chỉ **Gemini** trong DM (ChatGPT/Claude… dùng **ticket**)
 
 ---
 
 ## Ticket — key & model
 
-### Nhập key
-
-Nút trên ticket **hoặc**:
+1. Admin: `/setup_ticketai` (chọn category)  
+2. User mở ticket → nhập key:
 
 ```text
 key gemini: AIza...
@@ -269,9 +202,13 @@ key grok: xai-...
 key deepseek: sk-...
 ```
 
-Gõ `keys` để xem provider nào đã lưu.
+3. Chọn model / persona trong panel ticket (nếu có)  
+4. `keys` — xem provider đã nhập  
+5. `note: ...` — ghim ngữ cảnh ticket  
 
-### Link lấy key
+**Ticket chưa có key → bot không chat** (nhắc nhập key).
+
+Link lấy key:
 
 | Provider | Link |
 |----------|------|
@@ -281,77 +218,115 @@ Gõ `keys` để xem provider nào đã lưu.
 | Grok | https://console.x.ai |
 | DeepSeek | https://platform.deepseek.com/api_keys |
 
-### Model (menu)
-
-- **Gemini:** 3.6 Flash · 3.5 Flash · Flash-Lite · 3.1 Pro  
-- **ChatGPT:** GPT-5 · GPT-5 Mini · GPT-5.1 · o4-mini  
-- **Claude:** Sonnet 5 · Haiku 4.5 · Opus 5  
-- **Grok:** 4.6 · 4.5 · 4.3  
-- **DeepSeek:** Chat · Reasoner  
-
-Model + key phải **cùng nhà**. Nhiều API free hạn chế hoặc trả phí.
-
-Không có key ticket → bot **fallback** `GEMINI_API_KEY` server (nếu có).
-
-Admin tạo panel: **`/setup_ticketai`**.
+Một số model / quota **cần billing** trên nhà cung cấp tương ứng.
 
 ---
 
-## Danh sách lệnh
+## Persona & tên AI
 
-### Mọi người
+### Persona (tính cách)
 
-| Lệnh | Mô tả |
-|------|--------|
-| `/help` · `help` | Hướng dẫn |
-| `/ping` | Độ trễ |
-| `/reset` | Xóa lịch sử chat cá nhân |
-| `/status` | Trạng thái + persona + quota |
-| `/quota` | Hạn mức ngày |
-| `/persona` | Đổi sở thích AI |
-| `/ainame` | Đặt / xem tên AI |
-| `/ask` | Hỏi 1 phát (ephemeral) |
-| `/summary` | Tóm tắt kênh/ticket |
-| `/export` | Xuất chat `.txt` |
-| `/dich` | Dịch VI ↔ EN |
-| `/imagine` | Tạo ảnh (Gemini) |
-| `/video` | Tạo video (Gemini) |
-| `/tts` | Bật/tắt TTS file MP3 |
-| `/speak` | Đọc một đoạn (MP3) |
-| `/voice` | join / leave / speak |
-| `/voicechat` | Bot đọc câu trả lời |
-| `/quiz` | Đố vui |
-| `/remind` | Nhắc sau N phút |
-| `/ship` | Meme % hợp đôi |
-| `/feedback` | Góp ý → admin log |
+- Slash: `/persona style:...` (kèm `custom` nếu tùy chỉnh)  
+- Trong ticket: chọn preset hoặc mô tả tùy chỉnh  
 
-### Admin
+Preset: default, chatgpt (Luna), gemini, claude, grok, dola, copilot, deepseek, custom.
 
-| Lệnh | Mô tả |
-|------|--------|
-| `/setchannel` | Khóa 1 kênh AI cho server |
-| `/unsetchannel` | Bỏ khóa kênh |
-| `/setup_ticketai` | Panel tạo ticket |
-| `/clear` | Xóa N tin gần đây |
-| `/clear24h` · `/unclear24h` | Tự xóa tin >24h |
-| `/moderation` | Bật/tắt lọc spam-link |
-| `/adminpanel` | Panel tổng quan |
+### Tên AI
+
+Mặc định = **tên bot trên Discord** (đổi nick bot → AI xưng theo tên đó).
+
+```text
+name: Luna
+tên ai: Mây
+```
+
+Slash: `/ainame name:Luna`  
+
+Reset: `name: reset` hoặc `/ainame` để trống (tùy triển khai).
 
 ---
 
-## Tin nhắn đặc biệt
+## Training / Knowledge Base
 
-| Tin nhắn | Việc |
-|----------|------|
-| `help` · `!help` | Embed hướng dẫn |
-| `key gemini:` / `key chatgpt:` … | Lưu API key ticket |
-| `keys` | Xem key đã có |
-| `name:` · `tên ai:` | Đặt tên AI |
-| `note:` | Ghim ngữ cảnh ticket |
-| `remember:` · `memory` · `forget:` | Bộ nhớ dài hạn |
-| `dịch:` · `dich:` | Dịch nhanh |
-| `gif:` · `gửi gif` | Gửi GIF Giphy |
-| `voicechat on` / `off` | Bật đọc trả lời |
+Bot **học fact bạn dạy** và ưu tiên khi trả lời (system prompt).
+
+### Cá nhân (mọi user)
+
+```text
+train: Tên mình là Minh, thích Roblox
+kb add: Mã giảm giá hôm nay NEXUS50
+kb list
+kb del: Roblox
+kb del: 1
+kb clear
+kb help
+```
+
+Slash: `/kb` → hướng dẫn.
+
+### Server (cần Admin)
+
+```text
+kb guild add: Luật server: không spam
+kb guild list
+kb guild del: spam
+kb guild clear
+```
+
+### Global (chủ bot — `ADMIN_USER_IDS`)
+
+```text
+kb global add: Nexus AI là bot chính thức
+kb global list
+kb global del: ...
+kb global clear
+```
+
+| Phạm vi | Ai chỉnh | Giới hạn |
+|---------|----------|----------|
+| Cá nhân | User | 20 mục |
+| Server | Admin | 30 mục |
+| Global | Chủ bot | 40 mục |
+
+File: `knowledgeBase.json` (trong `DATA_DIR`).
+
+---
+
+## Memory
+
+Ghi chú theo user (khác KB — nhẹ hơn):
+
+```text
+remember: Mình dị ứng hải sản
+memory
+forget: hải sản
+```
+
+---
+
+## Auto-speech / TTS
+
+Mỗi câu bot trả lời kèm **file MP3** (đoạn đầu, tiếng Việt).
+
+**Slash**
+
+```text
+/auto-speech mode:on
+/auto-speech mode:off
+/tts mode:on
+/tts mode:off
+```
+
+**Tin nhắn tự do**
+
+```text
+auto-speech mode: on
+auto-speech mode: off
+tts: on
+tự đọc: bật
+```
+
+`/speak text:...` — đọc một đoạn bất kỳ thành MP3.
 
 ---
 
@@ -359,113 +334,146 @@ Admin tạo panel: **`/setup_ticketai`**.
 
 ### Voice
 
-1. Vào kênh voice  
-2. `/voice action:join`  
-3. `voicechat on` hoặc `/voicechat`  
-4. Nhắn text / tin thoại ở kênh AI hoặc ticket  
+```text
+/voice action:join
+/voice action:leave
+/voice action:speak   (+ text)
+/voicechat mode:on    — bot đọc câu trả lời trong voice (host hỗ trợ UDP)
+```
 
-Host free (Railway) đôi khi chỉ gửi **file MP3** (UDP voice lỗi).
+Host free (một số platform) có thể **không join voice ổn định** → fallback MP3.
 
 ### GIF
 
+Cần `GIPHY_API_KEY`:
+
 ```text
-gif: funny
 gif: cat
-gửi gif đi
+gif: funny
 ```
 
-Cần `GIPHY_API_KEY` (https://developers.giphy.com).
+Bot cũng có thể đính GIF theo cảm xúc (không spam).
+
+---
+
+## Danh sách lệnh slash
+
+| Lệnh | Mô tả |
+|------|--------|
+| `/help` | Hướng dẫn |
+| `/ping` | Độ trễ |
+| `/reset` | Xóa lịch sử chat session |
+| `/setchannel` | Đặt kênh AI (Admin) |
+| `/unsetchannel` | Bỏ kênh AI (Admin) |
+| `/status` | Trạng thái bot / TTS / persona |
+| `/clear` | Xóa tin nhắn (Admin) |
+| `/clear24h` · `/unclear24h` | Tự xóa kênh theo lịch (Admin) |
+| `/setup_ticketai` | Panel ticket (Admin) |
+| `/imagine` · `/video` | Tạo ảnh / video (model có thể cần billing) |
+| `/persona` | Đổi tính cách |
+| `/ainame` | Đặt tên gọi AI |
+| `/quota` | Hạn mức ngày |
+| `/tts` · `/auto-speech` | Bật/tắt đọc to MP3 |
+| `/speak` | TTS một đoạn text |
+| `/mode` | normal / strict |
+| `/quiz` | Đố vui |
+| `/voice` · `/voicechat` | Voice channel |
+| `/summary` | Tóm tắt kênh |
+| `/dich` | Dịch đoạn |
+| `/remind` | Nhắc sau N phút |
+| `/ask` | Hỏi nhanh |
+| `/export` | Xuất transcript |
+| `/kb` | Hướng dẫn Knowledge Base |
+| `/feedback` | Góp ý → admin log |
+| `/adminpanel` | Panel admin |
+| `/moderation` | Bật/tắt moderation (Admin) |
+| `/ship` | Ship 2 user vui |
+
+---
+
+## Tin nhắn đặc biệt
+
+| Cú pháp | Việc |
+|---------|------|
+| `help` | Embed hướng dẫn |
+| `key gemini: ...` | Lưu key (ticket / DM) |
+| `keys` | Xem key đã lưu |
+| `train:` / `kb add:` | Thêm tri thức cá nhân |
+| `kb list` / `kb del:` / `kb clear` | Quản lý KB |
+| `kb guild ...` | KB server (Admin) |
+| `kb global ...` | KB global (chủ bot) |
+| `remember:` / `memory` / `forget:` | Memory user |
+| `name: ...` / `tên ai: ...` | Đặt tên AI |
+| `note: ...` | Ghim ngữ cảnh **ticket** |
+| `dịch: ...` | Dịch nhanh |
+| `gif: ...` | Tìm GIF |
+| `auto-speech mode: on/off` | TTS tự động |
 
 ---
 
 ## Admin & an toàn
 
-| Lệnh / tính năng | Việc |
-|------------------|------|
-| `/adminpanel` | Online, số ticket, Gemini lock, moderation |
-| `/moderation mode:Bật` | Lọc spam lặp + link đáng ngờ (AI/ticket) |
-| `/feedback` | User → kênh `ADMIN_LOG_CHANNEL_ID` |
-| Welcome DM | Member mới (Members Intent) |
-| Quota warn | ≤10% hoặc ≤8 lượt → báo dưới câu trả lời |
+### Admin log
 
-```env
-ADMIN_LOG_CHANNEL_ID=id_kênh_log
-```
+Set `ADMIN_LOG_CHANNEL_ID` → nhận: ticket đóng, moderation, toxic/jailbreak, feedback.
 
----
+### Prompt Shield
 
-## Thông báo online
+Chặn kiểu jailbreak TikTok (`/deity`, ignore instructions, đòi system prompt, hướng dẫn tấn công mạng…).
 
-Sau **deploy / restart**, bot gửi **🟢 đã online**:
+### Toxic filter
 
-1. `ADMIN_LOG_CHANNEL_ID`  
-2. `ONLINE_ANNOUNCE_CHANNEL_ID` (nếu có)  
-3. Mọi kênh đã **`/setchannel`**
+Chặn từ ngữ xúc phạm nặng (có tinh chỉnh tránh false positive kiểu chữ “đêm”).
 
-Chưa `/setchannel` và không set env → không có tin public (chỉ log Railway).
+### Online announce
 
----
+Sau deploy bot gửi tin online nếu có `ONLINE_ANNOUNCE_CHANNEL_ID` hoặc kênh admin log / setchannel.
 
-## Mời bot / chia sẻ
+### Gemini lock (quota bot)
 
-```text
-https://discord.com/api/oauth2/authorize?client_id=APPLICATION_ID&permissions=2147552256&scope=bot%20applications.commands
-```
-
-- Share **link mời** — không share token, API key, dashboard host  
-- Thêm server **không** nhân phí host; **chat API** mới tốn quota  
-- Quota ticket = key **user** (nếu họ tự nhập)
+Khi key bot hết quota, kênh dùng key bot bị khóa chat; **ticket/DM có key user vẫn chat**.
 
 ---
 
 ## Cấu trúc code
 
 ```text
-index.js            # Entry, slash, chat pipeline, online announce
-paths.js            # DATA_DIR / Volume
-Providers.js        # ChatGPT, Claude, Grok, DeepSeek + model list
-TicketManager.js    # Ticket, menu, modal key
-Interest.js         # Persona presets
-UserPrefs.js        # Persona / TTS / ainame user
-Memory.js           # remember / forget
-Emotion.js          # Cảm xúc + xin GIF
-GifSearch.js        # Giphy
-QuotaManager.js     # Hạn mức + Gemini lock
-SessionManager.js   # Lịch sử chat xuống đĩa
-ClearManager.js     # clear / auto-clear 24h
-Moderation.js       # Spam / link
-VoiceManager.js     # Voice + fallback MP3
-Tts.js              # TTS
-AdminLog.js         # Log admin
-Quiz.js             # Đố vui
-data/               # Local only — trên Railway dùng /data (Volume)
+index.js            — bot chính, slash, message pipeline
+paths.js            — DATA_DIR + dataFile()
+KnowledgeBase.js    — Training / KB
+Memory.js           — remember / forget
+Interest.js         — persona, toxic, jailbreak shield
+Providers.js        — ChatGPT / Claude / Grok / DeepSeek + parse key
+TicketManager.js    — ticket
+SessionManager.js   — lịch sử chat
+UserPrefs.js        — persona, TTS, key DM, tên AI
+ClearManager.js     — auto-clear kênh
+QuotaManager.js     — hạn mức ngày
+Moderation.js       — spam / link
+Tts.js · VoiceManager.js · GifSearch.js · Emotion.js · Quiz.js · AdminLog.js
 ```
-
-`package.json` scripts: `"start": "node index.js"`
-
-Dependencies chính: `discord.js` · `@google/genai` · `dotenv` · `express`
 
 ---
 
 ## Xử lý lỗi thường gặp
 
-| Hiện tượng | Nguyên nhân / cách xử lý |
-|------------|---------------------------|
-| Deploy xong không chat trong ticket | Data mất — gắn **Volume** + `DATA_DIR=/data`; hoặc `key gemini:` lại |
-| Log “khởi tạo tickets/allowedChannels mới” | Chưa Volume hoặc Volume trống lần đầu |
-| Không tin 🟢 online | Chưa `/setchannel` và chưa set admin/announce channel |
-| GIF chỉ chữ, không ảnh | Thiếu/sai `GIPHY_API_KEY` |
-| GPT/Grok báo lỗi Gemini | Chọn đúng model + `key chatgpt:` / `key grok:` |
-| 400 Grok | Model id cũ — dùng `grok-4.5` / `grok-4.6` |
-| 403/402 API | Hết credit / cần billing nhà cung cấp |
-| Slash không hiện | Đợi đăng ký guild; kick/re-add bot; xem log “Slash commands” |
-| Welcome không DM | Tắt DM user hoặc chưa bật **Server Members Intent** |
-| Voice không vào | Thiếu quyền Connect/Speak; host free → MP3 fallback |
+| Hiện tượng | Cách xử lý |
+|------------|------------|
+| Bot không online | Kiểm tra `DISCORD_TOKEN`, log Railway |
+| Slash trùng 2 lần | Deploy bản chỉ đăng ký **guild** + xóa global; mở lại app Discord |
+| DM chat không cần key | Deploy bản mới — DM **bắt buộc** `key gemini:` |
+| Ticket chat không cần key | Deploy bản mới — ticket bắt buộc key user |
+| Mất ticket / setchannel sau deploy | Gắn **Volume** `/data` + `DATA_DIR=/data` |
+| `Key quá ngắn` | Dán full key (`AIza...` / `sk-...`), không gõ thử `d` |
+| GIF không ra | Thêm `GIPHY_API_KEY` |
+| Voice không join | Host không hỗ trợ UDP voice → dùng `/tts` / MP3 |
+| Công thức `$O(\sqrt{n})$` | Bản mới sanitize → `O(sqrt(n))` |
+| 429 / quota Gemini | Billing AI Studio hoặc dùng key khác trong ticket/DM |
+| Toxic chặn oan | Cập nhật `Interest.js` (regex đã siết) |
 
 ---
 
-## License
+## License / ghi chú
 
-MIT (hoặc quyền bạn quy định). Tuân thủ điều khoản Discord, Google, OpenAI, Anthropic, xAI, DeepSeek, Giphy.
-
-**Nexus AI** · multi-provider · discord.js v14 · Railway-ready
+Tự host, tự chịu trách nhiệm API key & nội dung.  
+Không chia sẻ token bot / API key trong ticket public hoặc repo public.
