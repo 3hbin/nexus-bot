@@ -124,6 +124,15 @@ const {
   formatMemoryList,
   getMemorySystemBlock,
 } = require('./Memory.js');
+const {
+  loadKnowledgeBase,
+  addKnowledge,
+  listKnowledge,
+  deleteKnowledge,
+  clearKnowledge,
+  getKnowledgeSystemBlock,
+  helpKnowledgeText,
+} = require('./KnowledgeBase.js');
 const { startQuiz, tryAnswer, hasActiveQuiz } = require('./Quiz.js');
 const {
   isVoiceAvailable,
@@ -160,7 +169,8 @@ function buildHelpEmbed() {
           '`/summary` — tóm tắt kênh\n' +
           '`/imagine` · `/video` — tạo media\n' +
           '**DM bot** — chat Gemini (cần `key gemini:` của bạn, model mặc định, không ticket)\n' +
-          '`/mode` · `/tts` · `/speak` · `/quota`',
+          '`kb add:` / `train:` — Training & Knowledge Base tự chỉnh\n' +
+          '`/mode` · `/tts` · `/auto-speech` · `/speak` · `/quota`',
       },
       {
         name: '🎫 Ticket & bộ nhớ',
@@ -439,6 +449,12 @@ app.listen(PORT, () => {
 // ==========================================
 const aiInstance = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
+function isBotOwner(userId) {
+  const raw = process.env.ADMIN_USER_IDS || process.env.OWNER_ID || '';
+  const ids = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+  return ids.includes(String(userId));
+}
+
 const SYSTEM_INSTRUCTION =
   'Bạn là trợ lý AI trên Discord, thân thiện, dí dỏm. ' +
   'Tên gọi của bạn do hệ thống chỉ định (thường trùng tên bot). ' +
@@ -682,6 +698,16 @@ const commands = [
         .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })
     ),
   new SlashCommandBuilder()
+    .setName('auto-speech')
+    .setDescription('Bật/tắt tự đọc to mỗi câu trả lời (giống /tts)')
+    .addStringOption((opt) =>
+      opt
+        .setName('mode')
+        .setDescription('on = bật, off = tắt')
+        .setRequired(true)
+        .addChoices({ name: 'Bật (on)', value: 'on' }, { name: 'Tắt (off)', value: 'off' })
+    ),
+  new SlashCommandBuilder()
     .setName('speak')
     .setDescription('Đọc một đoạn text thành file giọng nói (MP3)')
     .addStringOption((opt) =>
@@ -771,6 +797,9 @@ const commands = [
         .setDescription('Tên mới (để trống / "reset" = về mặc định)')
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName('kb')
+    .setDescription('Training / Knowledge Base — xem hướng dẫn tự chỉnh'),
   new SlashCommandBuilder()
     .setName('feedback')
     .setDescription('Góp ý / báo lỗi — gửi tới kênh admin log')
@@ -1111,6 +1140,7 @@ client.on('interactionCreate', async (interaction) => {
           systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket]\n${ticketData.contextNote}`;
         }
         systemInstruction += getMemorySystemBlock(interaction.user.id);
+        systemInstruction += getKnowledgeSystemBlock(interaction.user.id, interaction.guildId || null);
 
         const personaKeyPart =
           selectedPersona === 'custom'
@@ -1267,6 +1297,10 @@ client.on('interactionCreate', async (interaction) => {
           `Tin nhắn sau dùng tên này (persona + model giữ nguyên).`,
         ephemeral: true,
       });
+    }
+
+    if (commandName === 'kb') {
+      return interaction.reply({ content: helpKnowledgeText(), ephemeral: true });
     }
 
     if (commandName === 'feedback') {
@@ -1550,14 +1584,14 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: getQuotaStatusText(user.id), ephemeral: true });
     }
 
-    if (commandName === 'tts') {
+    if (commandName === 'tts' || commandName === 'auto-speech') {
       const mode = interaction.options.getString('mode');
       const enabled = mode === 'on';
       setUserTts(user.id, enabled);
       return interaction.reply({
         content: enabled
-          ? '🔊 Đã **bật TTS**: mỗi câu trả lời chat sẽ kèm file MP3 (đoạn đầu, tiếng Việt).'
-          : '🔇 Đã **tắt TTS**.',
+          ? '🔊 **Auto-speech ON** — mỗi câu trả lời chat sẽ kèm file MP3 (tiếng Việt).\nTắt: `/auto-speech mode:off` hoặc `/tts mode:off`'
+          : '🔇 **Auto-speech OFF** — bot không còn đính MP3 mỗi tin.\nBật lại: `/auto-speech mode:on`',
         ephemeral: true,
       });
     }
@@ -1692,6 +1726,7 @@ client.on('interactionCreate', async (interaction) => {
           getUserPrefs(interaction.user.id).customPersonaText || null
         );
         systemInstruction += getMemorySystemBlock(interaction.user.id);
+        systemInstruction += getKnowledgeSystemBlock(interaction.user.id, interaction.guildId || null);
         const chat = aiInstance.chats.create({
           model: DEFAULT_MODEL,
           config: { systemInstruction, maxOutputTokens: 768 },
@@ -1875,6 +1910,27 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [buildHelpEmbed()] }).catch(() => {});
   }
 
+  // Auto-speech / TTS từ tin nhắn tự do
+  // /auto-speech mode: on|off  |  auto-speech: on  |  auto speech mode off  |  /tts on
+  {
+    const rawAs = message.content.replace(/<@!?\d+>/g, '').trim();
+    const mAs = rawAs.match(
+      /^(?:\/)?(?:auto[\s_-]?speech|tts|tự\s*đọc|tu\s*doc)\s*(?:mode\s*)?[:\s]+\s*(on|off|bật|bat|tắt|tat|mở|mo|đóng|dong)\s*$/i
+    );
+    if (mAs) {
+      const v = mAs[1].toLowerCase();
+      const enabled = /^(on|bật|bat|mở|mo)$/i.test(v);
+      setUserTts(message.author.id, enabled);
+      return message
+        .reply(
+          enabled
+            ? '🔊 **Auto-speech ON** — mỗi câu trả lời sẽ kèm file MP3.\nTắt: `auto-speech mode: off` hoặc `/auto-speech mode:off`'
+            : '🔇 **Auto-speech OFF**.\nBật lại: `auto-speech mode: on` hoặc `/auto-speech mode:on`'
+        )
+        .catch(() => {});
+    }
+  }
+
   // Nhập key — ticket (đa provider) hoặc DM (chỉ Gemini)
   {
     const parsedKey = parseKeyMessage(message.content);
@@ -1962,6 +2018,100 @@ client.on('messageCreate', async (message) => {
   }
   if (/^(memory|memories|bộ nhớ|bo nho)\s*$/i.test(rawContent)) {
     return message.reply(formatMemoryList(message.author.id)).catch(() => {});
+  }
+
+  // ===== Training / Knowledge Base (tự chỉnh) =====
+  {
+    const rawKb = message.content.replace(/<@!?\d+>/g, '').trim();
+    // help
+    if (/^(?:kb|knowledge|training)\s*(?:help|\?)?\s*$/i.test(rawKb) || /^train\s*help\s*$/i.test(rawKb)) {
+      return message.reply(helpKnowledgeText()).catch(() => {});
+    }
+    // list
+    if (/^(?:kb|knowledge|training)\s+list\s*$/i.test(rawKb) || /^train\s+list\s*$/i.test(rawKb)) {
+      return message.reply(listKnowledge({ scope: 'all', guildId: message.guildId, userId: message.author.id }).slice(0, 1900)).catch(() => {});
+    }
+    // clear personal
+    if (/^(?:kb|train(?:ing)?)\s+clear\s*$/i.test(rawKb)) {
+      const r = clearKnowledge({ scope: 'user', userId: message.author.id });
+      return message.reply(r.message).catch(() => {});
+    }
+    // del personal
+    const delM = rawKb.match(/^(?:kb|train(?:ing)?)\s+(?:del|delete|remove|xóa|xoá)\s*:?\s*(.+)$/i);
+    if (delM) {
+      const r = deleteKnowledge({ scope: 'user', keyword: delM[1].trim(), userId: message.author.id });
+      return message.reply(r.message).catch(() => {});
+    }
+    // add personal: kb add: | train: | training:
+    const addM = rawKb.match(/^(?:kb\s+add|train(?:ing)?)\s*:\s*(.+)$/i);
+    if (addM) {
+      const r = addKnowledge({
+        scope: 'user',
+        text: addM[1],
+        userId: message.author.id,
+        by: message.author.id,
+      });
+      return message.reply(r.message).catch(() => {});
+    }
+    // guild admin
+    const gAdd = rawKb.match(/^kb\s+guild\s+add\s*:\s*(.+)$/i);
+    if (gAdd) {
+      if (!message.guild || !message.member?.permissions?.has?.(PermissionFlagsBits.Administrator)) {
+        return message.reply('❌ Chỉ **admin server** mới thêm KB guild.').catch(() => {});
+      }
+      const r = addKnowledge({
+        scope: 'guild',
+        text: gAdd[1],
+        guildId: message.guildId,
+        by: message.author.id,
+      });
+      return message.reply(r.message).catch(() => {});
+    }
+    if (/^kb\s+guild\s+list\s*$/i.test(rawKb)) {
+      return message.reply(listKnowledge({ scope: 'guild', guildId: message.guildId, userId: message.author.id }).slice(0, 1900)).catch(() => {});
+    }
+    const gDel = rawKb.match(/^kb\s+guild\s+(?:del|delete|xóa|xoá)\s*:?\s*(.+)$/i);
+    if (gDel) {
+      if (!message.guild || !message.member?.permissions?.has?.(PermissionFlagsBits.Administrator)) {
+        return message.reply('❌ Chỉ **admin server**.').catch(() => {});
+      }
+      const r = deleteKnowledge({ scope: 'guild', keyword: gDel[1].trim(), guildId: message.guildId });
+      return message.reply(r.message).catch(() => {});
+    }
+    if (/^kb\s+guild\s+clear\s*$/i.test(rawKb)) {
+      if (!message.guild || !message.member?.permissions?.has?.(PermissionFlagsBits.Administrator)) {
+        return message.reply('❌ Chỉ **admin server**.').catch(() => {});
+      }
+      const r = clearKnowledge({ scope: 'guild', guildId: message.guildId });
+      return message.reply(r.message).catch(() => {});
+    }
+    // global owner
+    const glAdd = rawKb.match(/^kb\s+global\s+add\s*:\s*(.+)$/i);
+    if (glAdd) {
+      if (!isBotOwner(message.author.id)) {
+        return message.reply('❌ Chỉ **chủ bot** (`ADMIN_USER_IDS`) mới thêm KB global.').catch(() => {});
+      }
+      const r = addKnowledge({ scope: 'global', text: glAdd[1], by: message.author.id });
+      return message.reply(r.message).catch(() => {});
+    }
+    if (/^kb\s+global\s+list\s*$/i.test(rawKb)) {
+      return message.reply(listKnowledge({ scope: 'global', userId: message.author.id }).slice(0, 1900)).catch(() => {});
+    }
+    const glDel = rawKb.match(/^kb\s+global\s+(?:del|delete|xóa|xoá)\s*:?\s*(.+)$/i);
+    if (glDel) {
+      if (!isBotOwner(message.author.id)) {
+        return message.reply('❌ Chỉ **chủ bot**.').catch(() => {});
+      }
+      const r = deleteKnowledge({ scope: 'global', keyword: glDel[1].trim() });
+      return message.reply(r.message).catch(() => {});
+    }
+    if (/^kb\s+global\s+clear\s*$/i.test(rawKb)) {
+      if (!isBotOwner(message.author.id)) {
+        return message.reply('❌ Chỉ **chủ bot**.').catch(() => {});
+      }
+      const r = clearKnowledge({ scope: 'global' });
+      return message.reply(r.message).catch(() => {});
+    }
   }
 
   // Ghim ngữ cảnh ticket: note: ...
@@ -2199,7 +2349,8 @@ const toxicReply = handleToxicBehavior(prompt);
   try {
     try { await message.channel.sendTyping(); } catch (err) {}
 
-    let activeAi = aiInstance;
+    // Không gán key bot sẵn — tránh DM/ticket lách qua
+    let activeAi = null;
     let selectedModel = DEFAULT_MODEL;
     let usingTicketKey = false;
     let selectedPersona = DEFAULT_PERSONA_ID;
@@ -2212,6 +2363,24 @@ const toxicReply = handleToxicBehavior(prompt);
 
     let externalProvider = null; // chatgpt|claude|grok|deepseek
     let externalApiKey = null;
+
+    // DM: chặn sớm nếu chưa có key Gemini user
+    if (isDM) {
+      const userKeyEarly = getUserGeminiKey(message.author.id);
+      if (!userKeyEarly) {
+        return message.reply(
+          '🔑 **Chat DM cần key Gemini của bạn** (không dùng ticket, không dùng key bot).\n\n' +
+            'Gửi một tin:\n' +
+            '```\nkey gemini: AIza...\n```\n' +
+            'Lấy key: https://aistudio.google.com\n' +
+            'Model **mặc định** — không cần chọn model.\n' +
+            'Gõ `keys` để kiểm tra.'
+        );
+      }
+      activeAi = new GoogleGenAI({ apiKey: userKeyEarly });
+      selectedModel = DEFAULT_MODEL;
+      usingTicketKey = true;
+    }
 
     if (ticketData) {
       selectedPersona = ticketData.selectedPersona || DEFAULT_PERSONA_ID;
@@ -2291,15 +2460,18 @@ const toxicReply = handleToxicBehavior(prompt);
       }
     }
 
-    // DM: luôn khóa model mặc định (gemini flash)
+    // DM: luôn khóa model mặc định + chỉ key user
     if (isDM) {
       selectedModel = DEFAULT_MODEL;
       externalProvider = null;
       const userKey = getUserGeminiKey(message.author.id);
-      if (userKey) {
-        activeAi = new GoogleGenAI({ apiKey: userKey });
-        usingTicketKey = true;
+      if (!userKey) {
+        return message.reply(
+          '🔑 **Chat DM cần key Gemini.** Gửi: `key gemini: AIza...`'
+        );
       }
+      activeAi = new GoogleGenAI({ apiKey: userKey });
+      usingTicketKey = true;
     }
 
 
@@ -2325,6 +2497,7 @@ const toxicReply = handleToxicBehavior(prompt);
       systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
     }
     systemInstruction += getMemorySystemBlock(message.author.id);
+    systemInstruction += getKnowledgeSystemBlock(message.author.id, message.guildId || null);
     systemInstruction +=
       '\n\n[Code policy] Khi user xin code dài/full project: (1) tóm tắt cấu trúc ngắn, (2) mỗi file bọc trong code fence ```lang — hệ thống đổi thành LINK paste.';
 
@@ -2606,7 +2779,7 @@ const toxicReply = handleToxicBehavior(prompt);
           : '⚠️ Không lấy được GIF lúc này (Giphy lỗi / cooldown 30s). Thử lại hoặc `gif: cat` / `gif: funny`.');
     }
 
-    // TTS (nếu user bật /tts on) — file MP3 đoạn đầu câu trả lời
+    // TTS / auto-speech (nếu user bật /tts hoặc /auto-speech on)
     let ttsAttachment = null;
     if (userPrefs.ttsEnabled) {
       try {
@@ -2739,6 +2912,7 @@ const toxicReply = handleToxicBehavior(prompt);
     await loadGeminiLock().catch((e) => console.error('Lỗi load geminiLock:', e));
     await loadUserPrefs().catch((e) => console.error('Lỗi load userPrefs:', e));
     await loadMemory().catch((e) => console.error('Lỗi load memory:', e));
+    await loadKnowledgeBase().catch((e) => console.error('Lỗi load knowledgeBase:', e));
 
     if (DISCORD_TOKEN) {
       await client.login(DISCORD_TOKEN);
