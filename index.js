@@ -494,6 +494,54 @@ const userSessions = new Map();
 const allowedChannels = new Map();
 
 /** Tên AI: custom user/ticket → không thì đúng tên bot Discord */
+/** Key Gemini cho media: ticket/DM user trước, không có thì null (không đốt key bot nếu trong ticket) */
+function getGeminiKeyFromTicket(channelId) {
+  const tk = channelId ? getTicketByChannel(channelId) : null;
+  if (!tk) return null;
+  const pk = { ...(tk.providerKeys || {}) };
+  if (tk.userApiKey && !pk.gemini) pk.gemini = tk.userApiKey;
+  return pk.gemini || null;
+}
+
+function resolveGeminiClient(interaction) {
+  const channelId = interaction.channelId;
+  const inTicket = !!(channelId && getTicketByChannel(channelId));
+  if (inTicket) {
+    const k = getGeminiKeyFromTicket(channelId);
+    if (!k) {
+      return {
+        ok: false,
+        message:
+          '🔑 **Tạo ảnh/video trong ticket cần key Gemini của bạn** (tránh tốn quota bot).\n' +
+          'Gửi: `key gemini: AIza...`\n' +
+          'Lấy key: https://aistudio.google.com\n' +
+          '_(Veo / image model có thể cần billing trên key của bạn)_',
+      };
+    }
+    return { ok: true, ai: new GoogleGenAI({ apiKey: k }), usingUserKey: true };
+  }
+  // DM: key user
+  if (!interaction.guildId) {
+    const k = getUserGeminiKey(interaction.user.id);
+    if (!k) {
+      return {
+        ok: false,
+        message:
+          '🔑 **DM cần key Gemini của bạn.**\nGửi: `key gemini: AIza...`',
+      };
+    }
+    return { ok: true, ai: new GoogleGenAI({ apiKey: k }), usingUserKey: true };
+  }
+  // Kênh server (không ticket): key bot
+  if (!aiInstance) {
+    return {
+      ok: false,
+      message: '❌ Bot chưa cấu hình GEMINI_API_KEY trên server!',
+    };
+  }
+  return { ok: true, ai: aiInstance, usingUserKey: false };
+}
+
 function resolveAiDisplayName(ticketData, userPrefs) {
   const custom =
     (ticketData && ticketData.aiName) ||
@@ -1598,8 +1646,9 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === 'imagine') {
-      if (!aiInstance) {
-        return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
+      const gem = resolveGeminiClient(interaction);
+      if (!gem.ok) {
+        return interaction.reply({ content: gem.message, ephemeral: true });
       }
 
       const q = checkQuota(user.id, 'image');
@@ -1619,7 +1668,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply();
 
       try {
-        const { buffer, mimeType } = await generateImage(aiInstance, promptStr);
+        const { buffer, mimeType } = await generateImage(gem.ai, promptStr);
         consumeQuota(user.id, 'image');
         const ext = mimeType.includes('png') ? 'png' : 'jpg';
         const attachment = new AttachmentBuilder(buffer, { name: `nexus_image.${ext}` });
@@ -1636,8 +1685,9 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === 'video') {
-      if (!aiInstance) {
-        return interaction.reply({ content: '❌ Bot chưa được cấu hình GEMINI_API_KEY trên server!', ephemeral: true });
+      const gem = resolveGeminiClient(interaction);
+      if (!gem.ok) {
+        return interaction.reply({ content: gem.message, ephemeral: true });
       }
 
       const q = checkQuota(user.id, 'video');
@@ -1655,11 +1705,16 @@ client.on('interactionCreate', async (interaction) => {
 
       const promptStr = interaction.options.getString('prompt');
       await interaction.deferReply();
-      await interaction.editReply('🎬 Đang tiến hành dựng video bằng Veo 3.1... Quá trình này có thể mất từ 1 đến 6 phút, vui lòng chờ xíu nhé!');
+      await interaction.editReply(
+        '🎬 Đang dựng video bằng Veo... (1–6 phút)\n' +
+          (gem.usingUserKey
+            ? '_(Dùng **key Gemini của bạn** trong ticket/DM — không tốn quota bot)_'
+            : '_(Dùng key bot — kênh server)_')
+      );
 
       let videoPath;
       try {
-        videoPath = await generateVideo(aiInstance, promptStr, {
+        videoPath = await generateVideo(gem.ai, promptStr, {
           onProgress: (s) => console.log(`⏳ Đang tạo video cho ${user.tag}... [${s}s]`),
         });
         consumeQuota(user.id, 'video');
