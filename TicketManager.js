@@ -3,6 +3,7 @@
 // xử lý chọn model, chọn persona/sở thích AI, modal API key & đóng ticket.
 const fs = require('fs').promises;
 const path = require('path');
+const { dataFile, DATA_DIR } = require('./paths.js');
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -19,7 +20,7 @@ const {
 const { PERSONA_PRESETS, DEFAULT_PERSONA_ID } = require('./Interest.js');
 const { allModelSelectOptions, providerFromModel, PROVIDER_META, helpKeyText } = require('./Providers.js');
 
-const TICKETS_FILE = path.join(__dirname, 'data', 'tickets.json');
+const TICKETS_FILE = dataFile('tickets.json');
 
 /** @type {Map<string, { channelId: string, userApiKey?: string|null, selectedModel?: string|null, selectedPersona?: string|null, customPersonaText?: string|null }>} */
 let tickets = new Map();
@@ -42,7 +43,7 @@ async function loadTickets() {
     });
     if (!content) {
       tickets = new Map();
-      console.log('TicketManager: Không tìm thấy file tickets, khởi tạo mới.');
+      console.log('TicketManager: Chưa có tickets.json trong DATA_DIR — tạo mới (lần đầu hoặc Volume trống).');
       return;
     }
     const obj = JSON.parse(content || '{}');
@@ -103,6 +104,85 @@ function getTicketByChannel(channelId) {
 
 function getTicketCount() {
   return tickets.size;
+}
+
+/** Ticket đang mở của user trong 1 guild (1 user = 1 ticket) */
+function findOpenTicketByUser(guildId, userId) {
+  const uid = String(userId);
+  const gid = guildId ? String(guildId) : null;
+  for (const [channelId, info] of tickets.entries()) {
+    if (!info) continue;
+    const owner = String(info.ownerId || info.userId || '');
+    if (owner !== uid) continue;
+    if (gid && info.guildId && String(info.guildId) !== gid) continue;
+    return { channelId, ...info };
+  }
+  return null;
+}
+
+/**
+ * Đóng + xóa kênh ticket (nút Đóng hoặc user bảo AI đóng)
+ * @returns {{ ok: boolean, message?: string }}
+ */
+async function closeTicketChannel(channel, closedByUser, client) {
+  if (!channel || !channel.id) {
+    return { ok: false, message: '❌ Không tìm thấy kênh ticket.' };
+  }
+  const channelId = String(channel.id);
+  const channelName = channel.name || channelId;
+  const closedBy = closedByUser || null;
+
+  tickets.delete(channelId);
+  try {
+    await saveTickets();
+  } catch (e) {
+    console.error('TicketManager: saveTickets on close', e);
+  }
+
+  setImmediate(async () => {
+    let transcript = '';
+    try {
+      if (typeof channel.messages?.fetch === 'function') {
+        const msgs = await channel.messages.fetch({ limit: 30 });
+        const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+        const botId = client?.user?.id;
+        transcript = sorted
+          .filter((m) => !m.author.bot || (botId && m.author.id === botId))
+          .map((m) => {
+            const who = m.author.bot ? 'Nexus' : m.author.username;
+            return `${who}: ${(m.content || '').slice(0, 200)}`;
+          })
+          .filter((l) => l.length > 8)
+          .slice(-20)
+          .join('\n');
+      }
+    } catch (_) {}
+
+    if (typeof global.__nexusOnTicketClose === 'function') {
+      try {
+        await global.__nexusOnTicketClose({
+          channelId,
+          channelName,
+          closedBy,
+          transcript,
+        });
+      } catch (cbErr) {
+        console.warn('onTicketClose callback', cbErr && cbErr.message);
+      }
+    }
+  });
+
+  setTimeout(async () => {
+    try {
+      if (typeof channel.delete === 'function') {
+        await channel.delete('Ticket closed');
+      }
+    } catch (err) {
+      console.error('TicketManager: Lỗi khi xóa kênh ticket:', err);
+    }
+  }, 2500);
+
+  return { ok: true, message: '🔒 Đang đóng ticket — kênh sẽ **xóa** sau vài giây...' };
 }
 
 
@@ -168,7 +248,7 @@ function getTicketProviderKey(ticket, provider) {
   return null;
 }
 
-async function setTicketPersona(channelId, personaId, customText = null) {
+async function setTicketPersona(channelId, personaId, customText = null, allowToxicSwear = null) {
   try {
     const key = String(channelId);
     const existing = tickets.get(key) || {
@@ -176,10 +256,16 @@ async function setTicketPersona(channelId, personaId, customText = null) {
       userApiKey: null,
       selectedModel: null,
       selectedPersona: DEFAULT_PERSONA_ID,
-      customPersonaText: null,
     };
     existing.selectedPersona = personaId || DEFAULT_PERSONA_ID;
-    existing.customPersonaText = personaId === 'custom' ? (customText || null) : null;
+    existing.customPersonaText = personaId === 'custom' ? customText || null : null;
+    if (allowToxicSwear === true || allowToxicSwear === false) {
+      existing.allowToxicSwear = allowToxicSwear;
+    } else {
+      // Mặc định theo preset
+      const preset = PERSONA_PRESETS[existing.selectedPersona];
+      existing.allowToxicSwear = !!(preset && preset.allowToxic);
+    }
     tickets.set(key, existing);
     await saveTickets();
     return true;
@@ -190,8 +276,7 @@ async function setTicketPersona(channelId, personaId, customText = null) {
 }
 
 function buildPersonaSelectMenu() {
-  // Không dùng emoji unicode — Discord option không hiện logo URL.
-  // Nếu server có custom emoji logo, gán PERSONA_PRESETS[id].emojiId = '123...'
+  // Discord select tối đa 25 option
   const options = Object.values(PERSONA_PRESETS).map((p) => {
     const opt = new StringSelectMenuOptionBuilder()
       .setLabel(p.label.slice(0, 100))
@@ -199,6 +284,8 @@ function buildPersonaSelectMenu() {
       .setValue(p.id);
     if (p.emojiId) {
       opt.setEmoji({ id: String(p.emojiId) });
+    } else if (p.emoji) {
+      opt.setEmoji(p.emoji);
     }
     return opt;
   });
@@ -210,8 +297,8 @@ function buildPersonaSelectMenu() {
   options.push(customOpt);
   return new StringSelectMenuBuilder()
     .setCustomId('select_persona')
-    .setPlaceholder('Chọn sở thích AI (ChatGPT, Gemini, Grok…)')
-    .addOptions(options);
+    .setPlaceholder('Chọn sở thích AI / tính cách…')
+    .addOptions(options.slice(0, 25));
 }
 
 function personaLabel(personaId, customText) {
@@ -282,12 +369,26 @@ async function handleTicketInteraction(interaction) {
         parentId = interaction.channel.parentId;
       }
 
+      // 1 user chỉ 1 ticket đang mở trong server
+      const existingTk = findOpenTicketByUser(guild.id, member.user.id);
+      if (existingTk) {
+        const mention = existingTk.channelId ? `<#${existingTk.channelId}>` : '(ticket cũ)';
+        await interaction.reply({
+          content:
+            `⚠️ Bạn **đã có 1 ticket** rồi: ${mention}\n` +
+            'Chỉ được mở **1 ticket** tại một thời điểm.\n' +
+            'Muốn mở mới: vào ticket cũ → bấm **Đóng Ticket** hoặc nhắn `đóng ticket` / `xóa ticket`.',
+          ephemeral: true,
+        });
+        return true;
+      }
+
       const cleanUsername = member.user.username.toLowerCase().replace(/[^a-z0-9\-]/g, '');
       const baseName = `ticket-${cleanUsername}`.slice(0, 80) || 'ticket-ai';
       let finalName = baseName;
-      let count = 1;
-      while (guild.channels.cache.find((c) => c.name === finalName)) {
-        finalName = `${baseName}-${count++}`;
+      // Không tạo ticket-user-1, ticket-user-2... — 1 user 1 tên cố định
+      if (guild.channels.cache.find((c) => c.name === finalName)) {
+        finalName = `${baseName}-ai`.slice(0, 90);
       }
 
       const created = await guild.channels
@@ -321,6 +422,9 @@ async function handleTicketInteraction(interaction) {
 
       tickets.set(String(created.id), {
         channelId: String(created.id),
+        guildId: String(guild.id),
+        ownerId: String(member.user.id),
+        userId: String(member.user.id),
         userApiKey: null,
         selectedModel: 'gemini-3.6-flash',
         selectedPersona: DEFAULT_PERSONA_ID,
@@ -450,7 +554,34 @@ Nhớ nhập key đúng nhà cung cấp (nút Key… hoặc \`key ${ticketInfo.a
         return true;
       }
 
-      await setTicketPersona(interaction.channelId, selected, null);
+      // Trẻ trâu 💀 — cảnh báo trước khi bật
+      if (selected === 'tretrau_toxic') {
+        const warn = new EmbedBuilder()
+          .setTitle('⚠️ Lưu ý khi bật có bị bậy bạ ⚠️')
+          .setDescription(
+            'Persona **Trẻ trâu 💀** cho phép AI (và lọc tin) **chửi bậy rất mạnh**.\n\n' +
+              '• **Bật** → áp persona + **tắt chống spam bậy bạ** trong ticket này\n' +
+              '• **Tắt** → giữ sở thích / persona như cũ, không đổi\n\n' +
+              '_Chỉ dùng khi bạn chấp nhận nội dung tục tĩu._'
+          )
+          .setColor(0xed4245);
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('persona_toxic_on')
+            .setLabel('Bật')
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('💀'),
+          new ButtonBuilder()
+            .setCustomId('persona_toxic_off')
+            .setLabel('Tắt')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('🔒')
+        );
+        await interaction.reply({ embeds: [warn], components: [row], ephemeral: true });
+        return true;
+      }
+
+      await setTicketPersona(interaction.channelId, selected, null, false);
       const label = personaLabel(selected, null);
       const preset = PERSONA_PRESETS[selected];
       const embed = new EmbedBuilder()
@@ -465,6 +596,32 @@ Nhớ nhập key đúng nhà cung cấp (nút Key… hoặc \`key ${ticketInfo.a
       }
       await interaction.reply({
         embeds: [embed],
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    // Xác nhận Bật/Tắt trẻ trâu toxic
+    if (interaction.isButton() && (interaction.customId === 'persona_toxic_on' || interaction.customId === 'persona_toxic_off')) {
+      const ticketInfo = getTicketByChannel(interaction.channelId);
+      if (!ticketInfo) {
+        await interaction.reply({ content: '❌ Không phải ticket hợp lệ.', ephemeral: true });
+        return true;
+      }
+      if (interaction.customId === 'persona_toxic_off') {
+        await interaction.reply({
+          content: '🔒 Đã **Tắt** — giữ nguyên sở thích AI như trước, không bật chế độ chửi bậy.',
+          ephemeral: true,
+        });
+        return true;
+      }
+      await setTicketPersona(interaction.channelId, 'tretrau_toxic', null, true);
+      await interaction.reply({
+        content:
+          '💀 Đã **Bật** Trẻ trâu toxic.\n' +
+          '• AI trả lời giọng trẻ trâu + chửi bậy mạnh\n' +
+          '• **Đã tắt** chống spam bậy bạ trong ticket này\n' +
+          'Đổi lại persona khác bất cứ lúc nào trên menu sở thích.',
         ephemeral: true,
       });
       return true;
@@ -587,71 +744,20 @@ Nhớ nhập key đúng nhà cung cấp (nút Key… hoặc \`key ${ticketInfo.a
     // Reply ngay trước việc nặng — tránh DiscordAPIError 10062 Unknown interaction
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       const channel = interaction.channel;
-      const channelId = String(interaction.channelId);
-      const channelName = channel?.name || channelId;
-      const closedBy = interaction.user;
-
+      const r = await closeTicketChannel(channel, interaction.user, interaction.client);
       try {
         if (!interaction.replied && !interaction.deferred) {
           await interaction.reply({
-            content: '🔒 Đang đóng ticket — kênh sẽ xóa sau vài giây...',
+            content: r.message || '🔒 Đang đóng ticket...',
             ephemeral: true,
           });
         }
       } catch (replyErr) {
         console.warn('TicketManager: close reply failed', replyErr && replyErr.message);
       }
-
-      tickets.delete(channelId);
       try {
-        await saveTickets();
-      } catch (e) {
-        console.error('TicketManager: saveTickets on close', e);
-      }
-
-      // Background: transcript + admin log (không block interaction)
-      setImmediate(async () => {
-        let transcript = '';
-        try {
-          if (channel && typeof channel.messages?.fetch === 'function') {
-            const msgs = await channel.messages.fetch({ limit: 30 });
-            const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-            transcript = sorted
-              .filter((m) => !m.author.bot || m.author.id === interaction.client.user.id)
-              .map((m) => {
-                const who = m.author.bot ? 'Nexus' : m.author.username;
-                return `${who}: ${(m.content || '').slice(0, 200)}`;
-              })
-              .filter((l) => l.length > 8)
-              .slice(-20)
-              .join('\n');
-          }
-        } catch (_) {}
-
-        if (typeof global.__nexusOnTicketClose === 'function') {
-          try {
-            await global.__nexusOnTicketClose({
-              channelId,
-              channelName,
-              closedBy,
-              transcript,
-            });
-          } catch (cbErr) {
-            console.warn('onTicketClose callback', cbErr && cbErr.message);
-          }
-        }
-      });
-
-      setTimeout(async () => {
-        try {
-          if (channel && typeof channel.delete === 'function') {
-            await channel.delete();
-          }
-        } catch (err) {
-          console.error('TicketManager: Lỗi khi xóa kênh ticket:', err);
-        }
-      }, 3000);
-
+        await channel.send('🔒 Ticket sẽ bị **xóa** sau vài giây...').catch(() => {});
+      } catch (_) {}
       return true;
     }
 
@@ -713,6 +819,8 @@ module.exports = {
   handleTicketInteraction,
   getTicketByChannel,
   getTicketCount,
+  findOpenTicketByUser,
+  closeTicketChannel,
   ensureTicketRecord,
   setTicketApiKey,
   getTicketProviderKey,
