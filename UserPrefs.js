@@ -65,6 +65,7 @@ function getUserPrefs(userId) {
       voiceChat: false,
       aiName: null,
       geminiApiKey: null, // DM chat — key Gemini của user
+      voiceGender: 'nu', // nam | nu
     }
   );
 }
@@ -151,6 +152,17 @@ function getStrictModeBlock() {
 `.trim();
 }
 
+
+function setUserVoiceGender(userId, gender) {
+  const id = String(userId);
+  const cur = { ...getUserPrefs(id) };
+  const g = String(gender || 'nu').toLowerCase();
+  cur.voiceGender = g === 'nam' || g === 'male' || g === 'm' ? 'nam' : 'nu';
+  prefs.set(id, cur);
+  scheduleSave();
+  return cur;
+}
+
 module.exports = {
   loadUserPrefs,
   getUserPrefs,
@@ -160,6 +172,7 @@ module.exports = {
   setUserVoiceChat,
   setUserAiName,
   setUserGeminiKey,
+  setUserVoiceGender,
   getUserGeminiKey,
   personaDisplayName,
   getStrictModeBlock,
