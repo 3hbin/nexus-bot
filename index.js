@@ -1829,7 +1829,7 @@ client.on('interactionCreate', async (interaction) => {
       setUserVoiceChat(interaction.user.id, on);
       return interaction.reply({
         content: on
-          ? '🎙️ **Chat thoại BẬT**\n1. Vào voice → `/voice action:join`\n2. Nhắn text hoặc **tin nhắn thoại** trong kênh AI/ticket\n3. Bot trả lời + cố đọc to (host free có thể gửi MP3)'
+          ? '🎙️ **Chat thoại BẬT** (Phase B)\n1. Vào voice → `/voice action:join`\n2. Gửi **tin nhắn thoại** (giữ mic Discord) hoặc nhắn text\n3. Bot nghe → trả lời chữ + **đọc to** trong voice (host free có thể chỉ gửi MP3)'
           : '🔇 Đã tắt chat thoại.',
         ephemeral: true,
       });
@@ -1859,9 +1859,9 @@ client.on('interactionCreate', async (interaction) => {
         setUserVoiceChat(interaction.user.id, on);
         return interaction.reply({
           content: on
-            ? '🎙️ **Chat thoại BẬT** — khi bot đang trong voice, câu trả lời AI sẽ được **đọc to**.\n' +
-              'Cách dùng: `/voice join` → nhắn text hoặc **tin nhắn thoại** trong kênh AI/ticket.\n' +
-              '_(Host free có thể chỉ gửi file MP3 nếu UDP voice lỗi)_'
+            ? '🎙️ **Chat thoại BẬT** — bot đọc câu trả lời trong voice.\n' +
+              '**Tin nhắn thoại:** vào voice → `/voice join` → giữ mic gửi thoại → bot nghe & đáp bằng giọng.\n' +
+              '_(Railway Trial có thể chỉ gửi MP3 nếu UDP lỗi)_'
             : '🔇 Đã tắt chat thoại.',
           ephemeral: true,
         });
@@ -2729,6 +2729,10 @@ client.on('messageCreate', async (message) => {
     systemInstruction += getKnowledgeSystemBlock(message.author.id, message.guildId || null);
     systemInstruction +=
       '\n\n[Code policy] Khi user xin code dài/full project: (1) tóm tắt cấu trúc ngắn, (2) mỗi file bọc trong code fence ```lang — hệ thống đổi thành LINK paste.';
+    if (audioAtts.length > 0) {
+      systemInstruction +=
+        '\n\n[Voice message] User gửi tin nhắn thoại. Hãy nghe hiểu, trả lời tiếng Việt tự nhiên như đang nói chuyện (2–5 câu, dễ đọc thành tiếng). Không markdown dài, không list dài, không code trừ khi bị hỏi code.';
+    }
 
     if (!userSessions.has(sessionKey)) {
       const restoredHistory = getSavedHistory(sessionKey);
@@ -3169,24 +3173,69 @@ client.on('messageCreate', async (message) => {
         await firstSent.react(reactEmoji).catch(() => {});
       }
     } catch (_) {}
-    // Chat thoại: đọc câu trả lời nếu user bật + bot có thể speak trong guild
+    // Phase B — Chat thoại: tin nhắn thoại / voiceChat → đọc câu trả lời trong voice (fallback MP3)
     try {
       const prefsVc = getUserPrefs(message.author.id);
-      if (prefsVc.voiceChat && message.guild && replyText) {
-        const speakText = String(replyText).replace(/https?:\/\/\S+/g, '').slice(0, 400);
+      const userInVoice = !!(message.member && message.member.voice && message.member.voice.channel);
+      const hadVoiceMsg = audioAtts.length > 0;
+      // Bật voicechat HOẶC (gửi tin nhắn thoại + đang trong voice)
+      const shouldSpeak =
+        message.guild &&
+        replyText &&
+        (prefsVc.voiceChat || (hadVoiceMsg && userInVoice) || (hadVoiceMsg && prefsVc.ttsEnabled));
+      if (shouldSpeak) {
+        const speakText = String(replyText)
+          .replace(/https?:\/\/\S+/g, '')
+          .replace(/[*_`#|>]/g, '')
+          .slice(0, 500);
         if (speakText.length > 2) {
+          // Ưu tiên join kênh voice của user nếu bot chưa vào
+          try {
+            if (userInVoice && typeof joinVoiceChannel === 'function') {
+              const { getVoiceConnection } = (() => {
+                try {
+                  return require('@discordjs/voice');
+                } catch {
+                  return {};
+                }
+              })();
+              const existing =
+                typeof getVoiceConnection === 'function'
+                  ? getVoiceConnection(message.guild.id)
+                  : null;
+              if (!existing) {
+                await joinVoiceChannel(message.member.voice.channel).catch(() => null);
+              }
+            }
+          } catch (_) {}
+
           const r = await speakInGuild(message.guild.id, speakText, {
             userVoiceChannel: message.member?.voice?.channel || null,
           });
           if (r && r.fallback && r.mp3Buffer) {
             await message.channel
               .send({
-                content: r.message || '🔊 *(Voice UDP lỗi — gửi MP3)*',
+                content:
+                  (hadVoiceMsg ? '🎙️ ' : '🔊 ') +
+                  (r.message || '*(Voice UDP lỗi trên host — gửi MP3 thay thế)*'),
                 files: [new AttachmentBuilder(r.mp3Buffer, { name: 'nexus_voice.mp3' })],
               })
               .catch(() => {});
+          } else if (r && r.ok && hadVoiceMsg) {
+            await message.channel
+              .send({ content: '🎙️ Đã nghe thoại → trả lời bằng giọng trong voice.' })
+              .catch(() => {});
           }
         }
+      } else if (hadVoiceMsg && message.guild && !userInVoice && !prefsVc.voiceChat) {
+        // Gợi ý 1 lần khi gửi thoại nhưng chưa vào voice
+        await message.channel
+          .send({
+            content:
+              '💡 **Tip chat thoại:** Vào kênh **voice** → `/voice action:join` → gửi tin nhắn thoại lại.\n' +
+              'Hoặc bật `/voicechat mode:on` để bot luôn đọc câu trả lời.',
+          })
+          .catch(() => {});
       }
     } catch (vcErr) {
       console.warn('voicechat speak', vcErr && vcErr.message);
