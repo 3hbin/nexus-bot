@@ -40,6 +40,8 @@ const {
   handleTicketInteraction,
   getTicketByChannel,
   getTicketCount,
+  findOpenTicketByUser,
+  closeTicketChannel,
   ensureTicketRecord,
   setTicketApiKey,
   setTicketNote,
@@ -716,6 +718,11 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: 'Nexus mặc định', value: 'default' },
+          { name: 'Trẻ trâu 🐃 (không chửi)', value: 'tretrau' },
+          { name: 'Trẻ trâu 💀 (chửi mạnh)', value: 'tretrau_toxic' },
+          { name: 'Nhẹ nhàng 🍀', value: 'nhe_nhang' },
+          { name: 'Ngầu 😎', value: 'ngau' },
+          { name: 'Phân tích 📚', value: 'phan_tich' },
           { name: 'ChatGPT (Luna)', value: 'chatgpt' },
           { name: 'Gemini', value: 'gemini' },
           { name: 'Claude (Nam)', value: 'claude' },
@@ -2313,6 +2320,30 @@ client.on('messageCreate', async (message) => {
       .catch(() => {});
   }
 
+  // User bảo đóng / xóa ticket → xóa kênh
+  if (ticketData) {
+    const closeCmd = message.content.replace(/<@!?\d+>/g, '').trim();
+    if (
+      /^(?:đóng|dong|xoá|xóa|xoa|close|delete|remove)\s*(?:ticket|vé|ve)?\s*[!.]?$/i.test(closeCmd) ||
+      /^(?:ticket\s*)?(?:đóng|dong|xoá|xóa|close)\s*(?:lại|di|đi|ticket)?\s*[!.]?$/i.test(closeCmd) ||
+      /^(?:xóa|xoá|xoa|delete)\s*kênh\s*[!.]?$/i.test(closeCmd)
+    ) {
+      const ownerId = String(ticketData.ownerId || ticketData.userId || '');
+      const isOwner = ownerId && ownerId === String(message.author.id);
+      const isAdmin =
+        message.member &&
+        message.member.permissions &&
+        typeof message.member.permissions.has === 'function' &&
+        message.member.permissions.has(PermissionFlagsBits.Administrator);
+      if (!isOwner && !isAdmin) {
+        return message.reply('❌ Chỉ **chủ ticket** hoặc **Admin** mới đóng được.').catch(() => {});
+      }
+      await message.reply('🔒 Ok, đang **đóng & xóa** ticket...').catch(() => {});
+      const r = await closeTicketChannel(message.channel, message.author, message.client);
+      return;
+    }
+  }
+
   if (ticketData && /^note\s*:/i.test(message.content.trim())) {
     const noteText = message.content.replace(/^note\s*:/i, '').trim();
     if (!noteText) {
@@ -2505,7 +2536,11 @@ client.on('messageCreate', async (message) => {
     return message.reply(jail.reply).catch(() => {});
   }
 
-const toxicReply = handleToxicBehavior(prompt);
+// Ticket bật Trẻ trâu 💀 → bỏ lọc chửi bậy (vẫn giữ Prompt Shield jailbreak)
+  const skipToxic =
+    !!(ticketData && ticketData.allowToxicSwear) ||
+    !!(ticketData && ticketData.selectedPersona === 'tretrau_toxic');
+  const toxicReply = skipToxic ? null : handleToxicBehavior(prompt);
   if (toxicReply) {
     adminLog({
       title: '⚠️ Toxic blocked',
