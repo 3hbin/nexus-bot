@@ -157,7 +157,8 @@ async function speakInGuild(guildId, text, opts) {
   // Luôn tạo TTS trước — dùng cho voice hoặc fallback MP3
   let audioBuf = null;
   try {
-    audioBuf = await synthesizeSpeech(text, 'vi');
+    const gender = opts.gender || opts.voiceGender || 'nu';
+    audioBuf = await synthesizeSpeech(text, gender);
   } catch (e) {
     console.warn('TTS fail', e && e.message);
   }
