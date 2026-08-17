@@ -1,4 +1,3 @@
-<img width="1080" height="2340" alt="Screenshot_20260817_152318" src="https://github.com/user-attachments/assets/f24f863f-2b0d-4f05-8096-53b744c18e90" />
 # Nexus AI — Discord Bot
 
 Bot Discord AI (**Node.js** + **discord.js v14**) — chat kênh AI / ticket / DM / mention.
