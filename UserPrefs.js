@@ -66,6 +66,8 @@ function getUserPrefs(userId) {
       aiName: null,
       geminiApiKey: null, // DM chat — key Gemini của user
       voiceGender: 'nu', // nam | nu
+      language: 'vi', // vi | en | ko | … | auto
+      languageSetByUser: false,
     }
   );
 }
@@ -163,6 +165,125 @@ function setUserVoiceGender(userId, gender) {
   return cur;
 }
 
+/** Mã ngôn ngữ hỗ trợ */
+const LANGUAGE_PRESETS = {
+  vi: { id: 'vi', label: 'Tiếng Việt', native: 'Tiếng Việt', flag: '🇻🇳' },
+  en: { id: 'en', label: 'English', native: 'English', flag: '🇬🇧' },
+  ko: { id: 'ko', label: '한국어 (Korean)', native: '한국어', flag: '🇰🇷' },
+  ja: { id: 'ja', label: '日本語 (Japanese)', native: '日本語', flag: '🇯🇵' },
+  zh: { id: 'zh', label: '中文 (Chinese)', native: '中文', flag: '🇨🇳' },
+  th: { id: 'th', label: 'ไทย (Thai)', native: 'ไทย', flag: '🇹🇭' },
+  fr: { id: 'fr', label: 'Français', native: 'Français', flag: '🇫🇷' },
+  es: { id: 'es', label: 'Español', native: 'Español', flag: '🇪🇸' },
+  de: { id: 'de', label: 'Deutsch', native: 'Deutsch', flag: '🇩🇪' },
+  ru: { id: 'ru', label: 'Русский', native: 'Русский', flag: '🇷🇺' },
+  id: { id: 'id', label: 'Bahasa Indonesia', native: 'Bahasa Indonesia', flag: '🇮🇩' },
+};
+
+function normalizeLanguage(code) {
+  const c = String(code || 'vi').toLowerCase().trim();
+  const aliases = {
+    vn: 'vi', viet: 'vi', vietnamese: 'vi', 'tieng-viet': 'vi', 'tiếng việt': 'vi',
+    eng: 'en', english: 'en', 'en-us': 'en', 'en-gb': 'en',
+    kr: 'ko', korean: 'ko', hangul: 'ko',
+    jp: 'ja', japanese: 'ja',
+    cn: 'zh', chinese: 'zh', 'zh-cn': 'zh', 'zh-tw': 'zh',
+    thai: 'th',
+    french: 'fr',
+    spanish: 'es',
+    german: 'de',
+    russian: 'ru',
+    indo: 'id', indonesian: 'id',
+  };
+  if (LANGUAGE_PRESETS[c]) return c;
+  if (aliases[c]) return aliases[c];
+  return 'vi';
+}
+
+function setUserLanguage(userId, langCode) {
+  const id = String(userId);
+  const cur = { ...getUserPrefs(id) };
+  const code = String(langCode || 'vi').toLowerCase().trim();
+  if (code === 'auto') {
+    cur.language = 'auto';
+    cur.languageSetByUser = true;
+  } else {
+    cur.language = normalizeLanguage(code);
+    cur.languageSetByUser = true;
+  }
+  prefs.set(id, cur);
+  scheduleSave();
+  return cur;
+}
+
+function getUserLanguage(userId) {
+  return normalizeLanguage(getUserPrefs(userId).language || 'vi');
+}
+
+/**
+ * Block system instruction bắt AI trả lời đúng ngôn ngữ.
+ */
+function getLanguageSystemBlock(langCode) {
+  const id = normalizeLanguage(langCode);
+  const meta = LANGUAGE_PRESETS[id] || LANGUAGE_PRESETS.vi;
+  const name = meta.native;
+  return `
+[Ngôn ngữ trả lời — BẮT BUỘC]
+- User đã chọn ngôn ngữ: **${name}** (${id}).
+- MỌI câu trả lời phải dùng **${name}** làm ngôn ngữ chính (trừ khi user yêu cầu đổi ngôn ngữ trong tin nhắn đó).
+- Code, tên kỹ thuật, brand có thể giữ nguyên tiếng Anh.
+- Không trộn ngôn ngữ lung tung; giải thích bằng ${name}.
+`.trim();
+}
+
+
+/**
+ * Map Discord locale (interaction.locale / guildPreferredLocale) → mã ngôn ngữ bot.
+ * Bot Discord KHÔNG nhận IP người dùng → dùng locale Discord (vùng app) thay cho IP.
+ */
+function localeToLanguage(discordLocale) {
+  const loc = String(discordLocale || '').toLowerCase().replace('_', '-');
+  if (!loc) return null;
+  if (loc.startsWith('vi')) return 'vi';
+  if (loc.startsWith('en')) return 'en';
+  if (loc.startsWith('ko')) return 'ko';
+  if (loc.startsWith('ja')) return 'ja';
+  if (loc.startsWith('zh')) return 'zh';
+  if (loc.startsWith('th')) return 'th';
+  if (loc.startsWith('fr')) return 'fr';
+  if (loc.startsWith('es')) return 'es';
+  if (loc.startsWith('de')) return 'de';
+  if (loc.startsWith('ru')) return 'ru';
+  if (loc.startsWith('id')) return 'id';
+  return null;
+}
+
+/**
+ * Ngôn ngữ hiệu lực của user.
+ * - Nếu đã set thủ công (languageSetByUser) → dùng language
+ * - Nếu language === 'auto' hoặc chưa set → suy từ discordLocale
+ * - Mặc định vi
+ */
+function resolveLanguageForUser(userId, discordLocale) {
+  const p = getUserPrefs(userId);
+  const raw = String(p.language || 'vi').toLowerCase();
+  if (raw === 'auto') {
+    return normalizeLanguage(localeToLanguage(discordLocale) || 'vi');
+  }
+  // Chưa từng chọn thủ công và vẫn default vi → thử locale
+  if (!p.languageSetByUser && raw === 'vi') {
+    const fromLoc = localeToLanguage(discordLocale);
+    if (fromLoc) return fromLoc;
+  }
+  return normalizeLanguage(raw);
+}
+
+function languageDisplay(langCode) {
+  const id = normalizeLanguage(langCode);
+  const m = LANGUAGE_PRESETS[id] || LANGUAGE_PRESETS.vi;
+  return `${m.flag} ${m.label}`;
+}
+
 module.exports = {
   loadUserPrefs,
   getUserPrefs,
@@ -173,6 +294,14 @@ module.exports = {
   setUserAiName,
   setUserGeminiKey,
   setUserVoiceGender,
+  setUserLanguage,
+  getUserLanguage,
+  getLanguageSystemBlock,
+  languageDisplay,
+  normalizeLanguage,
+  LANGUAGE_PRESETS,
+  localeToLanguage,
+  resolveLanguageForUser,
   getUserGeminiKey,
   personaDisplayName,
   getStrictModeBlock,
