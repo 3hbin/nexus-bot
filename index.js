@@ -98,6 +98,7 @@ const {
   setUserVoiceChat,
   setUserAiName,
   setUserGeminiKey,
+  setUserVoiceGender,
   getUserGeminiKey,
   personaDisplayName,
   getStrictModeBlock,
@@ -188,7 +189,7 @@ function buildHelpEmbed() {
           '`/dich` · `dịch: ...` — dịch VI↔EN\n' +
           '`/export` — xuất chat .txt\n' +
           '`/quiz` · `/ship` · `/remind`\n' +
-          '`/voice` · `/ping` · `/reset` · `/feedback`\n' +
+          '`/ping` · `/reset` · `/feedback`\n' +
           'Admin: `/adminpanel` · `/moderation`\n' +
           'Nút: Trả lời lại · Dịch · 👍/👎\n' +
           'Gõ `help` hoặc `!help` cũng xem được hướng dẫn này',
@@ -781,25 +782,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName('quiz')
     .setDescription('Mini-game đố vui (ticket hoặc kênh AI)'),
-  new SlashCommandBuilder()
-    .setName('voice')
-    .setDescription('Bot join/leave voice hoặc đọc text trong voice')
-    .addStringOption((opt) =>
-      opt
-        .setName('action')
-        .setDescription('join | leave | speak')
-        .setRequired(true)
-        .addChoices(
-          { name: 'Join kênh voice của bạn', value: 'join' },
-          { name: 'Leave voice', value: 'leave' },
-          { name: 'Speak (đọc text)', value: 'speak' },
-          { name: 'Bật chat thoại (bot đọc câu trả lời)', value: 'chat_on' },
-          { name: 'Tắt chat thoại', value: 'chat_off' }
-        )
-    )
-    .addStringOption((opt) =>
-      opt.setName('text').setDescription('Nội dung khi action=speak').setRequired(false)
-    ),
   new SlashCommandBuilder()
     .setName('voicechat')
     .setDescription('Bật/tắt bot đọc to câu trả lời (chat thoại)')
@@ -1789,7 +1771,7 @@ client.on('interactionCreate', async (interaction) => {
       const text = interaction.options.getString('text');
       await interaction.deferReply();
       try {
-        const buf = await synthesizeSpeech(text, 'vi');
+        const buf = await synthesizeSpeech(text, getUserPrefs(user.id).voiceGender || 'nu');
         if (!buf) {
           return interaction.editReply('❌ Không tạo được giọng nói. Thử đoạn ngắn hơn hoặc lại sau.');
         }
@@ -1823,80 +1805,57 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    if (commandName === 'voicechat') {
-      const mode = interaction.options.getString('mode');
-      const on = mode === 'on';
-      setUserVoiceChat(interaction.user.id, on);
+    if (commandName === 'voice-gender') {
+      const gender = interaction.options.getString('gender') || 'nu';
+      setUserVoiceGender(user.id, gender);
+      const label = gender === 'nam' ? 'Nam (Nam Minh)' : 'Nữ (Hoài My)';
       return interaction.reply({
-        content: on
-          ? '🎙️ **Chat thoại BẬT** (Phase B)\n1. Vào voice → `/voice action:join`\n2. Gửi **tin nhắn thoại** (giữ mic Discord) hoặc nhắn text\n3. Bot nghe → trả lời chữ + **đọc to** trong voice (host free có thể chỉ gửi MP3)'
-          : '🔇 Đã tắt chat thoại.',
+        content:
+          `🎤 Giọng đọc TTS: **${label}**\n` +
+          `Dùng với \`/tts mode:on\`, \`/speak\`, \`/voicechat\` hoặc tin nhắn thoại.\n` +
+          `Đổi nhanh: \`giọng: nam\` / \`giọng: nữ\``,
         ephemeral: true,
       });
     }
 
-    if (commandName === 'voice') {
-      const action = interaction.options.getString('action');
-
-      // defer ngay với join/speak (join có thể >3s → tránh "Ứng dụng không phản hồi")
-      if (action === 'join' || action === 'speak') {
-        await interaction.deferReply({ ephemeral: true });
+    if (commandName === 'voicechat') {
+      const mode = interaction.options.getString('mode');
+      const on = mode === 'on';
+      setUserVoiceChat(interaction.user.id, on);
+      if (!on) {
+        return interaction.reply({ content: '🔇 Đã tắt chat thoại.', ephemeral: true });
       }
-
-      if (action === 'join') {
-        const member = interaction.member;
-        const ch = member?.voice?.channel;
-        if (!ch) {
+      // Bật: tự join kênh voice của user nếu đang ở trong voice
+      let joinNote = '';
+      try {
+        const ch = interaction.member?.voice?.channel;
+        if (ch && interaction.guildId) {
+          await interaction.deferReply({ ephemeral: true });
+          const r = await joinVoiceChannel(ch);
+          joinNote = r && r.ok
+            ? '\n✅ Bot đã **vào voice** cùng bạn.'
+            : ('\n⚠️ ' + (r && r.message ? r.message : 'Chưa join được voice — vẫn đọc bằng MP3.'));
           return interaction.editReply(
-            '❌ Vào một kênh **voice** trước, rồi chạy `/voice action:join`.'
+            '🎙️ **Chat thoại BẬT**' + joinNote + '\n' +
+              '• Gửi **tin nhắn thoại** hoặc nhắn text trong ticket/kênh AI\n' +
+              '• Bot trả lời chữ + cố **đọc to** trong voice\n' +
+              '• Giọng: `giọng: nam` / `giọng: nữ` · `/voice-gender`\n' +
+              '• Tắt: `/voicechat mode:off`\n' +
+              '_(Host free có thể chỉ gửi file MP3 nếu UDP lỗi)_'
           );
         }
-        const r = await joinVoiceChannel(ch);
-        return interaction.editReply(r.message);
+      } catch (e) {
+        console.warn('voicechat auto-join', e && e.message);
       }
-      if (action === 'chat_on' || action === 'chat_off') {
-        const on = action === 'chat_on';
-        setUserVoiceChat(interaction.user.id, on);
-        return interaction.reply({
-          content: on
-            ? '🎙️ **Chat thoại BẬT** — bot đọc câu trả lời trong voice.\n' +
-              '**Tin nhắn thoại:** vào voice → `/voice join` → giữ mic gửi thoại → bot nghe & đáp bằng giọng.\n' +
-              '_(Railway Trial có thể chỉ gửi MP3 nếu UDP lỗi)_'
-            : '🔇 Đã tắt chat thoại.',
-          ephemeral: true,
-        });
-      }
-
-      if (action === 'leave') {
-        if (!guildId) {
-          return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
-        }
-        const r = leaveVoice(guildId);
-        return interaction.reply({ content: r.message, ephemeral: true });
-      }
-      if (action === 'speak') {
-        const text = interaction.options.getString('text');
-        if (!text || !text.trim()) {
-          return interaction.editReply('❌ Cần điền `text` khi speak.');
-        }
-        if (!guildId) {
-          return interaction.editReply('❌ Speak voice chỉ trong server.');
-        }
-        const member = interaction.member;
-        const r = await speakInGuild(guildId, text.trim(), {
-          guild: interaction.guild,
-          clientUserId: client.user.id,
-          userVoiceChannel: member?.voice?.channel || null,
-        });
-        // Fallback MP3 khi voice UDP không Ready (Render free, v.v.)
-        if (r.mp3Buffer) {
-          const attachment = new AttachmentBuilder(r.mp3Buffer, {
-            name: 'nexus_voice_fallback.mp3',
-          });
-          return interaction.editReply({ content: r.message, files: [attachment] });
-        }
-        return interaction.editReply(r.message);
-      }
+      return interaction.reply({
+        content:
+          '🎙️ **Chat thoại BẬT**\n' +
+          '1. Vào kênh **voice** Discord\n' +
+          '2. Chạy lại `/voicechat mode:on` (bot sẽ tự join)\n' +
+          '3. Gửi **tin nhắn thoại** hoặc text trong ticket/kênh AI\n' +
+          'Giọng: `giọng: nam` / `giọng: nữ`',
+        ephemeral: true,
+      });
     }
 
 
@@ -2083,7 +2042,7 @@ client.on('messageCreate', async (message) => {
       setUserVoiceChat(message.author.id, true);
       return message
         .reply(
-          '🎙️ **Chat thoại BẬT** — `/voice join` rồi nhắn text hoặc tin nhắn thoại.'
+          '🎙️ **Chat thoại BẬT** — `/voicechat mode:on` rồi nhắn text hoặc tin nhắn thoại.'
         )
         .catch(() => {});
     }
@@ -3092,7 +3051,7 @@ client.on('messageCreate', async (message) => {
     let ttsAttachment = null;
     if (userPrefs.ttsEnabled) {
       try {
-        const audioBuf = await synthesizeSpeech(replyText, 'vi');
+        const audioBuf = await synthesizeSpeech(replyText, (getUserPrefs(message.author.id).voiceGender || 'nu'));
         if (audioBuf) {
           ttsAttachment = new AttachmentBuilder(audioBuf, { name: 'nexus_reply.mp3' });
         }
@@ -3211,6 +3170,7 @@ client.on('messageCreate', async (message) => {
 
           const r = await speakInGuild(message.guild.id, speakText, {
             userVoiceChannel: message.member?.voice?.channel || null,
+            gender: getUserPrefs(message.author.id).voiceGender || 'nu',
           });
           if (r && r.fallback && r.mp3Buffer) {
             await message.channel
@@ -3232,7 +3192,7 @@ client.on('messageCreate', async (message) => {
         await message.channel
           .send({
             content:
-              '💡 **Tip chat thoại:** Vào kênh **voice** → `/voice action:join` → gửi tin nhắn thoại lại.\n' +
+              '💡 **Tip chat thoại:** Vào kênh **voice** → `/voicechat mode:on` → gửi tin nhắn thoại lại.\n' +
               'Hoặc bật `/voicechat mode:on` để bot luôn đọc câu trả lời.',
           })
           .catch(() => {});
