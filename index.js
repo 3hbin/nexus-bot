@@ -664,11 +664,10 @@ const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ kết nối của Bot'),
   new SlashCommandBuilder()
     .setName('help')
-    .setNameLocalizations({ vi: 'tro-giup', 'en-US': 'help' })
-    .setDescription('Xem hướng dẫn lệnh & tính năng Nexus AI')
+    .setDescription('Help / Hướng dẫn lệnh & tính năng Nexus AI')
     .setDescriptionLocalizations({
-      vi: 'Xem hướng dẫn lệnh & tính năng',
-      'en-US': 'View commands & features guide',
+      'en-US': 'View commands and features',
+      vi: 'Xem hướng dẫn lệnh và tính năng',
     }),
   new SlashCommandBuilder().setName('reset').setDescription('Xóa lịch sử trò chuyện cá nhân với Nexus AI'),
   new SlashCommandBuilder()
@@ -759,7 +758,7 @@ const commands = [
     .setDescription('Xem hạn mức API (chat / ảnh / video) còn lại hôm nay'),
   new SlashCommandBuilder()
     .setName('tts')
-    .setDescription('Bật/tắt đọc to câu trả lời bằng giọng nói (file MP3)')
+    .setDescription('TTS on/off / Bật tắt đọc text')
     .addStringOption((opt) =>
       opt
         .setName('mode')
@@ -779,7 +778,7 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('speak')
-    .setDescription('Đọc một đoạn text thành file giọng nói (MP3)')
+    .setDescription('Speak text / Đọc một câu')
     .addStringOption((opt) =>
       opt.setName('text').setDescription('Nội dung cần đọc').setRequired(true)
     ),
@@ -798,11 +797,10 @@ const commands = [
     .setDescription('Mini-game đố vui (ticket hoặc kênh AI)'),
   new SlashCommandBuilder()
     .setName('voicechat')
-    .setNameLocalizations({ vi: 'chat-thoai', 'en-US': 'voicechat' })
-    .setDescription('Bật/tắt bot đọc to câu trả lời (chat thoại)')
+    .setDescription('Voice chat — toggle speaking replies / Bật tắt đọc to')
     .setDescriptionLocalizations({
-      vi: 'Bật/tắt bot đọc to câu trả lời',
-      'en-US': 'Toggle AI speaking replies in voice',
+      'en-US': 'Toggle bot speaking replies in voice',
+      vi: 'Bật/tắt bot đọc to câu trả lời trong voice',
     })
     .addStringOption((opt) =>
       opt
@@ -817,7 +815,7 @@ const commands = [
     .setDescription('Tóm tắt 15–20 tin nhắn gần nhất trong kênh/ticket này'),
   new SlashCommandBuilder()
     .setName('dich')
-    .setDescription('Dịch Việt ↔ Anh (tự nhận ngôn ngữ)')
+    .setDescription('Translate VI ↔ EN / Dịch Việt ↔ Anh')
     .addStringOption((opt) =>
       opt.setName('text').setDescription('Đoạn cần dịch').setRequired(true)
     ),
@@ -837,26 +835,18 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('languages')
-    .setNameLocalizations({
-      vi: 'ngon-ngu',
-      'en-US': 'languages',
-    })
-    .setDescription('Chọn ngôn ngữ AI trả lời (ticket / kênh / DM)')
+    .setDescription('Languages — set AI reply language / Chọn ngôn ngữ AI')
     .setDescriptionLocalizations({
-      vi: 'Chọn ngôn ngữ AI trả lời',
-      'en-US': 'Set AI reply language',
+      'en-US': 'Set AI reply language (ticket / channel / DM)',
+      vi: 'Chọn ngôn ngữ AI trả lời (ticket / kênh / DM)',
     })
     .addStringOption((opt) =>
       opt
         .setName('language')
-        .setNameLocalizations({
-          vi: 'ngon-ngu',
-          'en-US': 'language',
-        })
-        .setDescription('Ngôn ngữ / Language')
+        .setDescription('Language / Ngôn ngữ')
         .setDescriptionLocalizations({
-          vi: 'Ngôn ngữ trả lời',
           'en-US': 'Reply language',
+          vi: 'Ngôn ngữ trả lời',
         })
         .setRequired(true)
         .addChoices(
@@ -885,7 +875,7 @@ const commands = [
     .setDescription('Xuất hội thoại gần đây trong kênh/ticket ra file .txt'),
   new SlashCommandBuilder()
     .setName('ainame')
-    .setDescription('Đặt tên gọi AI (vd: Luna, Mây) — không bắt buộc giống Nexus')
+    .setDescription('AI name / Đặt tên gọi AI (e.g. Luna)')
     .addStringOption((opt) =>
       opt
         .setName('name')
@@ -1880,17 +1870,21 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'languages') {
       const code = interaction.options.getString('language');
       setUserLanguage(interaction.user.id, code);
+      for (const key of [...userSessions.keys()]) {
+        if (key.startsWith(String(interaction.user.id))) userSessions.delete(key);
+      }
+      try { clearSessionsByPrefix(String(interaction.user.id)); } catch (_) {}
       const effective = resolveLanguageForUser(interaction.user.id, interaction.locale);
       const label =
         code === 'auto'
-          ? `🌐 Auto → ${languageDisplay(effective)} (locale Discord: \`${interaction.locale || 'n/a'}\`)`
+          ? `🌐 Auto → ${languageDisplay(effective)} (Discord locale: \`${interaction.locale || 'n/a'}\`)`
           : languageDisplay(code);
       return interaction.reply({
         content:
-          `🌐 **Ngôn ngữ AI:** ${label}\n` +
-          `• Ticket / kênh AI / DM: AI **nói bằng ngôn ngữ này**.\n` +
-          `• Đổi nhanh: \`lang: en\` · \`lang: ko\` · \`lang: vi\` · \`lang: auto\`\n` +
-          `• *Bot không đọc được IP* — Auto dùng **ngôn ngữ app Discord** (Settings → Language).`,
+          `🌐 **Language:** ${label}\n` +
+          `• Ticket / AI channel / DM: AI replies in this language.\n` +
+          `• Quick: \`lang: en\` · \`lang: ko\` · \`lang: vi\` · \`lang: auto\`\n` +
+          `• Session cleared — send a new message to test.`,
         ephemeral: true,
       });
     }
@@ -2750,13 +2744,20 @@ client.on('messageCreate', async (message) => {
       if (langMatch) {
         const code = langMatch[1].toLowerCase();
         setUserLanguage(message.author.id, code);
+        // Xóa session cũ để AI không kẹt tiếng Việt / lịch sử cũ
+        for (const key of [...userSessions.keys()]) {
+          if (key.startsWith(String(message.author.id))) userSessions.delete(key);
+        }
+        try { clearSessionsByPrefix(String(message.author.id)); } catch (_) {}
         const effective = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null);
         const label =
           code === 'auto'
             ? `🌐 Auto → ${languageDisplay(effective)}`
             : languageDisplay(code);
         await message.reply(
-          `🌐 **Ngôn ngữ AI:** ${label}\nTicket / kênh / DM: AI sẽ trả lời bằng ngôn ngữ này.`
+          `🌐 **Language / Ngôn ngữ AI:** ${label}\n` +
+            `Next replies in ticket / AI channel / DM will use this language.\n` +
+            `Chat again to test (session reset).`
         ).catch(() => {});
         return;
       }
@@ -2767,7 +2768,8 @@ client.on('messageCreate', async (message) => {
       selectedPersona === 'custom'
         ? `custom_${(customPersonaText || '').slice(0, 40).replace(/\s+/g, '_')}`
         : selectedPersona;
-    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}`;
+    const langForSession = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null);
+    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}_${langForSession}`;
 
     const aiNameResolved = resolveAiDisplayName(ticketData, userPrefs);
     let systemInstruction = getSystemInstructionForPersona(
@@ -2790,7 +2792,7 @@ client.on('messageCreate', async (message) => {
       '\n\n[Code policy] Khi user xin code dài/full project: (1) tóm tắt cấu trúc ngắn, (2) mỗi file bọc trong code fence ```lang — hệ thống đổi thành LINK paste.';
     if (audioAtts.length > 0) {
       systemInstruction +=
-        '\n\n[Voice message] User gửi tin nhắn thoại. Hãy nghe hiểu, trả lời tiếng Việt tự nhiên như đang nói chuyện (2–5 câu, dễ đọc thành tiếng). Không markdown dài, không list dài, không code trừ khi bị hỏi code.';
+        '\n\n[Voice message] User gửi tin nhắn thoại. Listen carefully and reply naturally in the user selected language (2–5 câu, dễ đọc thành tiếng). Không markdown dài, không list dài, không code trừ khi bị hỏi code.';
     }
 
     if (!userSessions.has(sessionKey)) {
@@ -2818,7 +2820,7 @@ client.on('messageCreate', async (message) => {
     let textPart =
       prompt ||
       (imageAtts.length
-        ? 'Hãy xem (các) ảnh đính kèm: mô tả nội dung, chữ trong ảnh (nếu có), và trả lời / hỗ trợ phù hợp bằng tiếng Việt.'
+        ? 'Hãy xem (các) ảnh đính kèm: mô tả nội dung, chữ trong ảnh (nếu có), và answer helpfully in the user selected language.'
         : '');
     if (userEmotion && userEmotion !== 'neutral' && prompt) {
       const toneLine =
@@ -2910,7 +2912,7 @@ client.on('messageCreate', async (message) => {
               if (!String(textPart).trim() || textPart === prompt) {
                 textPart =
                   (prompt && prompt.trim()) ||
-                  '[User gửi tin nhắn thoại / file audio. Hãy nghe, hiểu nội dung, trả lời tiếng Việt tự nhiên như đang trò chuyện.]';
+                  '[User gửi tin nhắn thoại / file audio. Hãy nghe, hiểu nội dung, reply naturally in the user selected language.]';
               }
             }
           }
@@ -2958,7 +2960,7 @@ client.on('messageCreate', async (message) => {
               if (!String(textPart).trim() || textPart === prompt) {
                 textPart =
                   (prompt && prompt.trim()) ||
-                  '[User gửi file video. Hãy xem video, mô tả nội dung chính, nhân vật/hành động, và trả lời tiếng Việt rõ ràng. Nếu user hỏi gì thì trả lời đúng câu hỏi.]';
+                  '[User gửi file video. Hãy xem video, mô tả nội dung chính, nhân vật/hành động, and answer clearly in the user selected language.]';
               }
             }
           }
