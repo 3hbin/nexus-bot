@@ -2744,8 +2744,9 @@ client.on('messageCreate', async (message) => {
 
     // Đổi ngôn ngữ nhanh: lang: en | lang: ko | lang: vi | lang: auto
     {
-      const langMatch = content.match(/^lang(?:uage)?\s*[:：]\s*([\w-]+)\s*$/i)
-        || content.match(/^ngôn\s*ngữ\s*[:：]\s*([\w-]+)\s*$/i);
+      const langSrc = (typeof prompt === 'string' ? prompt : (message.content || '')).replace(/<@!?\d+>/g, '').trim();
+      const langMatch = langSrc.match(/^lang(?:uage)?\s*[:：]\s*([\w-]+)\s*$/i)
+        || langSrc.match(/^ngôn\s*ngữ\s*[:：]\s*([\w-]+)\s*$/i);
       if (langMatch) {
         const code = langMatch[1].toLowerCase();
         setUserLanguage(message.author.id, code);
