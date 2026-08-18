@@ -1,3 +1,8 @@
+
+
+https://github.com/user-attachments/assets/25d34b15-2b1f-4f6b-ab8a-4c400310f6ca
+
+
 # Nexus AI — Discord Bot
 
 Bot Discord AI (**Node.js** + **discord.js v14**) — chat kênh AI / ticket / DM / mention.
