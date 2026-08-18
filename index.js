@@ -664,14 +664,11 @@ const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ kết nối của Bot'),
   new SlashCommandBuilder()
     .setName('help')
-    .setNameLocalizations({ vi: 'tro-giup', en_US: 'help', ko: 'doum', ja: 'help', zh_CN: 'bangzhu' })
+    .setNameLocalizations({ vi: 'tro-giup', 'en-US': 'help' })
     .setDescription('Xem hướng dẫn lệnh & tính năng Nexus AI')
     .setDescriptionLocalizations({
       vi: 'Xem hướng dẫn lệnh & tính năng',
-      en_US: 'View commands & features guide',
-      ko: '명령어 및 기능 안내',
-      ja: 'コマンドと機能のガイド',
-      zh_CN: '查看命令与功能说明',
+      'en-US': 'View commands & features guide',
     }),
   new SlashCommandBuilder().setName('reset').setDescription('Xóa lịch sử trò chuyện cá nhân với Nexus AI'),
   new SlashCommandBuilder()
@@ -801,12 +798,11 @@ const commands = [
     .setDescription('Mini-game đố vui (ticket hoặc kênh AI)'),
   new SlashCommandBuilder()
     .setName('voicechat')
-    .setNameLocalizations({ vi: 'chat-thoai', en_US: 'voicechat', ko: 'voicechat' })
+    .setNameLocalizations({ vi: 'chat-thoai', 'en-US': 'voicechat' })
     .setDescription('Bật/tắt bot đọc to câu trả lời (chat thoại)')
     .setDescriptionLocalizations({
       vi: 'Bật/tắt bot đọc to câu trả lời',
-      en_US: 'Toggle AI speaking replies in voice',
-      ko: '음성으로 답변 읽기 켜기/끄기',
+      'en-US': 'Toggle AI speaking replies in voice',
     })
     .addStringOption((opt) =>
       opt
@@ -843,52 +839,24 @@ const commands = [
     .setName('languages')
     .setNameLocalizations({
       vi: 'ngon-ngu',
-      en_US: 'languages',
-      en_GB: 'languages',
-      ko: 'eoneo',
-      ja: 'gengo',
-      zh_CN: 'yuyan',
-      fr: 'langues',
-      es_ES: 'idiomas',
-      de: 'sprachen',
-      ru: 'yazyk',
-      th: 'phasa',
+      'en-US': 'languages',
     })
     .setDescription('Chọn ngôn ngữ AI trả lời (ticket / kênh / DM)')
     .setDescriptionLocalizations({
       vi: 'Chọn ngôn ngữ AI trả lời',
-      en_US: 'Set AI reply language',
-      en_GB: 'Set AI reply language',
-      ko: 'AI 답변 언어 선택',
-      ja: 'AIの返信言語を設定',
-      zh_CN: '设置 AI 回复语言',
-      fr: 'Choisir la langue de réponse IA',
-      es_ES: 'Elegir idioma de respuesta de la IA',
-      de: 'KI-Antwortsprache wählen',
-      ru: 'Выбрать язык ответа ИИ',
-      th: 'เลือกภาษาที่ AI ตอบ',
+      'en-US': 'Set AI reply language',
     })
     .addStringOption((opt) =>
       opt
         .setName('language')
         .setNameLocalizations({
           vi: 'ngon-ngu',
-          ko: 'eoneo',
-          ja: 'gengo',
-          zh_CN: 'yuyan',
-          fr: 'langue',
-          es_ES: 'idioma',
-          de: 'sprache',
-          ru: 'yazyk',
-          th: 'phasa',
+          'en-US': 'language',
         })
         .setDescription('Ngôn ngữ / Language')
         .setDescriptionLocalizations({
           vi: 'Ngôn ngữ trả lời',
-          en_US: 'Reply language',
-          ko: '답변 언어',
-          ja: '返信言語',
-          zh_CN: '回复语言',
+          'en-US': 'Reply language',
         })
         .setRequired(true)
         .addChoices(
