@@ -12,7 +12,9 @@ Supports **Gemini · ChatGPT · Claude · Grok · DeepSeek**, persona, Training/
 
 ## Setup video
 
-https://github.com/user-attachments/assets/25d34b15-2b1f-4f6b-ab8a-4c400310f6ca
+
+https://github.com/user-attachments/assets/5a4fa948-ea97-4e3a-ab69-8be3cf4af3e4
+
 
 ---
 
