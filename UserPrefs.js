@@ -227,13 +227,17 @@ function getLanguageSystemBlock(langCode) {
   const id = normalizeLanguage(langCode);
   const meta = LANGUAGE_PRESETS[id] || LANGUAGE_PRESETS.vi;
   const name = meta.native;
-  return `
-[Ngôn ngữ trả lời — BẮT BUỘC]
-- User đã chọn ngôn ngữ: **${name}** (${id}).
-- MỌI câu trả lời phải dùng **${name}** làm ngôn ngữ chính (trừ khi user yêu cầu đổi ngôn ngữ trong tin nhắn đó).
-- Code, tên kỹ thuật, brand có thể giữ nguyên tiếng Anh.
-- Không trộn ngôn ngữ lung tung; giải thích bằng ${name}.
-`.trim();
+  // Priority rules in English so the model does not stay stuck in Vietnamese system prompt
+  return (
+    `[LANGUAGE — HIGHEST PRIORITY]\n` +
+    `You MUST reply in **${name}** (code: ${id}) only.\n` +
+    `- Every sentence of the user-facing reply must be in ${name}.\n` +
+    `- Do NOT reply in Vietnamese unless the selected language is Vietnamese (vi).\n` +
+    `- Do NOT mix languages. Greetings, explanations, jokes — all in ${name}.\n` +
+    `- Code, API names, brand names may stay in English.\n` +
+    `- If the user writes in another language, still answer in ${name} (unless they explicitly ask to switch).\n` +
+    `Selected language: ${name} (${id}).`
+  );
 }
 
 
