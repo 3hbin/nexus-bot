@@ -99,6 +99,13 @@ const {
   setUserAiName,
   setUserGeminiKey,
   setUserVoiceGender,
+  setUserLanguage,
+  getUserLanguage,
+  getLanguageSystemBlock,
+  languageDisplay,
+  LANGUAGE_PRESETS,
+  resolveLanguageForUser,
+  localeToLanguage,
   getUserGeminiKey,
   personaDisplayName,
   getStrictModeBlock,
@@ -655,7 +662,17 @@ async function loadAllowedChannelsFromFile() {
 // ==========================================
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ kết nối của Bot'),
-  new SlashCommandBuilder().setName('help').setDescription('Xem hướng dẫn lệnh & tính năng Nexus AI'),
+  new SlashCommandBuilder()
+    .setName('help')
+    .setNameLocalizations({ vi: 'tro-giup', en_US: 'help', ko: 'doum', ja: 'help', zh_CN: 'bangzhu' })
+    .setDescription('Xem hướng dẫn lệnh & tính năng Nexus AI')
+    .setDescriptionLocalizations({
+      vi: 'Xem hướng dẫn lệnh & tính năng',
+      en_US: 'View commands & features guide',
+      ko: '명령어 및 기능 안내',
+      ja: 'コマンドと機能のガイド',
+      zh_CN: '查看命令与功能说明',
+    }),
   new SlashCommandBuilder().setName('reset').setDescription('Xóa lịch sử trò chuyện cá nhân với Nexus AI'),
   new SlashCommandBuilder()
     .setName('setchannel')
@@ -784,7 +801,13 @@ const commands = [
     .setDescription('Mini-game đố vui (ticket hoặc kênh AI)'),
   new SlashCommandBuilder()
     .setName('voicechat')
+    .setNameLocalizations({ vi: 'chat-thoai', en_US: 'voicechat', ko: 'voicechat' })
     .setDescription('Bật/tắt bot đọc to câu trả lời (chat thoại)')
+    .setDescriptionLocalizations({
+      vi: 'Bật/tắt bot đọc to câu trả lời',
+      en_US: 'Toggle AI speaking replies in voice',
+      ko: '음성으로 답변 읽기 켜기/끄기',
+    })
     .addStringOption((opt) =>
       opt
         .setName('mode')
@@ -815,6 +838,73 @@ const commands = [
     )
     .addStringOption((opt) =>
       opt.setName('note').setDescription('Nội dung nhắc').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('languages')
+    .setNameLocalizations({
+      vi: 'ngon-ngu',
+      en_US: 'languages',
+      en_GB: 'languages',
+      ko: 'eoneo',
+      ja: 'gengo',
+      zh_CN: 'yuyan',
+      fr: 'langues',
+      es_ES: 'idiomas',
+      de: 'sprachen',
+      ru: 'yazyk',
+      th: 'phasa',
+    })
+    .setDescription('Chọn ngôn ngữ AI trả lời (ticket / kênh / DM)')
+    .setDescriptionLocalizations({
+      vi: 'Chọn ngôn ngữ AI trả lời',
+      en_US: 'Set AI reply language',
+      en_GB: 'Set AI reply language',
+      ko: 'AI 답변 언어 선택',
+      ja: 'AIの返信言語を設定',
+      zh_CN: '设置 AI 回复语言',
+      fr: 'Choisir la langue de réponse IA',
+      es_ES: 'Elegir idioma de respuesta de la IA',
+      de: 'KI-Antwortsprache wählen',
+      ru: 'Выбрать язык ответа ИИ',
+      th: 'เลือกภาษาที่ AI ตอบ',
+    })
+    .addStringOption((opt) =>
+      opt
+        .setName('language')
+        .setNameLocalizations({
+          vi: 'ngon-ngu',
+          ko: 'eoneo',
+          ja: 'gengo',
+          zh_CN: 'yuyan',
+          fr: 'langue',
+          es_ES: 'idioma',
+          de: 'sprache',
+          ru: 'yazyk',
+          th: 'phasa',
+        })
+        .setDescription('Ngôn ngữ / Language')
+        .setDescriptionLocalizations({
+          vi: 'Ngôn ngữ trả lời',
+          en_US: 'Reply language',
+          ko: '답변 언어',
+          ja: '返信言語',
+          zh_CN: '回复语言',
+        })
+        .setRequired(true)
+        .addChoices(
+          { name: '🌐 Auto (theo Discord locale / vùng app)', value: 'auto' },
+          { name: '🇻🇳 Tiếng Việt', value: 'vi' },
+          { name: '🇬🇧 English', value: 'en' },
+          { name: '🇰🇷 한국어 (Korean)', value: 'ko' },
+          { name: '🇯🇵 日本語 (Japanese)', value: 'ja' },
+          { name: '🇨🇳 中文 (Chinese)', value: 'zh' },
+          { name: '🇹🇭 ไทย (Thai)', value: 'th' },
+          { name: '🇫🇷 Français', value: 'fr' },
+          { name: '🇪🇸 Español', value: 'es' },
+          { name: '🇩🇪 Deutsch', value: 'de' },
+          { name: '🇷🇺 Русский', value: 'ru' },
+          { name: '🇮🇩 Bahasa Indonesia', value: 'id' }
+        )
     ),
   new SlashCommandBuilder()
     .setName('ask')
@@ -1230,6 +1320,7 @@ client.on('interactionCreate', async (interaction) => {
           customPersonaText,
           resolveAiDisplayName(ticketData || getTicketByChannel(interaction.channelId), getUserPrefs(interaction.user.id))
         );
+        systemInstruction += '\n\n' + getLanguageSystemBlock(resolveLanguageForUser(interaction.user.id, interaction.locale));
         if (up.replyMode === 'strict') {
           systemInstruction += '\n\n' + getStrictModeBlock();
         }
@@ -1818,7 +1909,25 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    if (commandName === 'voicechat') {
+    if (commandName === 'languages') {
+      const code = interaction.options.getString('language');
+      setUserLanguage(interaction.user.id, code);
+      const effective = resolveLanguageForUser(interaction.user.id, interaction.locale);
+      const label =
+        code === 'auto'
+          ? `🌐 Auto → ${languageDisplay(effective)} (locale Discord: \`${interaction.locale || 'n/a'}\`)`
+          : languageDisplay(code);
+      return interaction.reply({
+        content:
+          `🌐 **Ngôn ngữ AI:** ${label}\n` +
+          `• Ticket / kênh AI / DM: AI **nói bằng ngôn ngữ này**.\n` +
+          `• Đổi nhanh: \`lang: en\` · \`lang: ko\` · \`lang: vi\` · \`lang: auto\`\n` +
+          `• *Bot không đọc được IP* — Auto dùng **ngôn ngữ app Discord** (Settings → Language).`,
+        ephemeral: true,
+      });
+    }
+
+if (commandName === 'voicechat') {
       const mode = interaction.options.getString('mode');
       const on = mode === 'on';
       setUserVoiceChat(interaction.user.id, on);
@@ -1873,6 +1982,7 @@ client.on('interactionCreate', async (interaction) => {
           getUserPrefs(interaction.user.id).selectedPersona || DEFAULT_PERSONA_ID,
           getUserPrefs(interaction.user.id).customPersonaText || null
         );
+        systemInstruction += '\n\n' + getLanguageSystemBlock(resolveLanguageForUser(interaction.user.id, interaction.locale));
         systemInstruction += getMemorySystemBlock(interaction.user.id);
         systemInstruction += getKnowledgeSystemBlock(interaction.user.id, interaction.guildId || null);
         const chat = aiInstance.chats.create({
@@ -2663,6 +2773,26 @@ client.on('messageCreate', async (message) => {
     }
 
 
+
+    // Đổi ngôn ngữ nhanh: lang: en | lang: ko | lang: vi | lang: auto
+    {
+      const langMatch = content.match(/^lang(?:uage)?\s*[:：]\s*([\w-]+)\s*$/i)
+        || content.match(/^ngôn\s*ngữ\s*[:：]\s*([\w-]+)\s*$/i);
+      if (langMatch) {
+        const code = langMatch[1].toLowerCase();
+        setUserLanguage(message.author.id, code);
+        const effective = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null);
+        const label =
+          code === 'auto'
+            ? `🌐 Auto → ${languageDisplay(effective)}`
+            : languageDisplay(code);
+        await message.reply(
+          `🌐 **Ngôn ngữ AI:** ${label}\nTicket / kênh / DM: AI sẽ trả lời bằng ngôn ngữ này.`
+        ).catch(() => {});
+        return;
+      }
+    }
+
     // Session tách theo model + persona để đổi tính cách không dính lịch sử cũ
     const personaKeyPart =
       selectedPersona === 'custom'
@@ -2677,6 +2807,7 @@ client.on('messageCreate', async (message) => {
       customPersonaText,
       aiNameResolved
     );
+    systemInstruction += '\n\n' + getLanguageSystemBlock(resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null));
     systemInstruction += '\n\n' + getPromptShieldBlock();
     if (userPrefs.replyMode === 'strict') {
       systemInstruction += '\n\n' + getStrictModeBlock();
