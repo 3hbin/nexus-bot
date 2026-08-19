@@ -46,6 +46,7 @@ const {
   setTicketApiKey,
   setTicketNote,
   setTicketAiName,
+  setTicketThinkingLevel,
 } = require('./TicketManager.js');
 const {
   generateImage,
@@ -221,15 +222,16 @@ function buildHelpEmbed() {
 async function translateTextFull(ai, text) {
   const chat = ai.chats.create({
     model: DEFAULT_MODEL,
-    config: {
+    config: buildGeminiChatConfig({
       maxOutputTokens: 8192,
+      thinkingLevel: 'LOW',
       systemInstruction:
         'Bạn là dịch giả chuyên nghiệp. ' +
         'Nếu input chủ yếu tiếng Việt → dịch sang English. ' +
         'Nếu chủ yếu English → dịch sang tiếng Việt. ' +
         'Dịch ĐỦ toàn bộ nội dung, không tóm tắt, không cắt bớt, không bỏ đoạn. ' +
         'Giữ heading/emoji nếu có. Chỉ trả bản dịch, không giải thích thêm.',
-    },
+    }),
   });
   const result = await chat.sendMessage({ message: String(text || '').slice(0, 12000) });
   return (result?.text || '').trim() || '…';
@@ -508,9 +510,12 @@ function detectAiBullying(text) {
 
   // Pattern: bắt AI sủa / làm chó / bark / game penalty sủa
   const patterns = [
-    // gâu gâu / gauuu dài (tránh match từ ngẫu nhiên)
-    /\bg[aâãáàạăắằẵặâấầẫậ]*u{2,}(\s*g[aâãáàạăắằẵặâấầẫậ]*u{2,})+/i,
-    /\bg[aâãáàạăắằẵặâấầẫậ]u{3,}/i,
+    // gâu / gâu gâu / gau gau (chữ «gâu» = g+â+u — chỉ 1 chữ u)
+    /\bgâu(\s*gâu)+\b/i,
+    /\bgau(\s*gau)+\b/i,
+    /\bgâu\s*(đi|di)\b/i,
+    /\bgau\s*(di|đi)\b/i,
+    /\bg[aâãáàạăắằẵặâấầẫậ]*u{3,}/i,
     // sủa đi / sủa cái / sủa như chó
     /\b(sủa|sua)\s*(đi|di|cái|cai|vào|vao|to|lớn|lon)\b/i,
     /\b(sủa|sua)\s*(như|nhu)\s*(con\s*)?(chó|cho)\b/i,
@@ -547,10 +552,59 @@ function detectAiBullying(text) {
   return null;
 }
 
+
+/** Đoán nhanh: tin nhắn có phải tiếng Việt không (để auto-language) */
+function looksLikeVietnamese(text) {
+  const t = String(text || '');
+  if (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(t)) return true;
+  if (/\b(không|được|mình|bạn|ơi|nhé|nha|gì|sao|thế|rồi|chứ|của|với|cho|này|kia)\b/i.test(t)) return true;
+  return false;
+}
+
+/** Locale hiệu lực cho chat message (không có interaction.locale) */
+function localeHintForMessage(message) {
+  // Ưu tiên guild preferredLocale; nếu trống → null (resolveLanguageForUser sẽ về vi)
+  return message.guild?.preferredLocale || null;
+}
+
 const DEFAULT_MODEL = 'gemini-3.7-flash';
 
 const IMAGE_MODEL_NAME = 'gemini-3.1-flash-image';
 const VIDEO_MODEL_NAME = 'veo-3.1-generate-001';
+
+/**
+ * Config mặc định khi gọi Gemini (chat session / generateContent).
+ * thinkingLevel: 'LOW' | 'MEDIUM' | 'HIGH' — 3.7 Flash hỗ trợ suy nghĩ có kiểm soát.
+ * maxOutputTokens giữ cao để code dài; Discord vẫn cắt tin theo chunk.
+ */
+const GEMINI_THINKING_LEVEL = (process.env.GEMINI_THINKING_LEVEL || 'MEDIUM').toUpperCase();
+
+/** Thinking level từ ticket (chỉ Gemini). Fallback env / MEDIUM */
+function resolveThinkingLevel(ticketData) {
+  const raw = String(
+    (ticketData && ticketData.thinkingLevel) ||
+      process.env.GEMINI_THINKING_LEVEL ||
+      'MEDIUM'
+  ).toUpperCase();
+  if (raw === 'LOW' || raw === 'HIGH' || raw === 'MEDIUM') return raw;
+  return 'MEDIUM';
+}
+
+function buildGeminiChatConfig(extra = {}) {
+  const cfg = {
+    maxOutputTokens: extra.maxOutputTokens ?? 8192,
+    temperature: extra.temperature ?? 0.7,
+    // SDK @google/genai: thinkingConfig.thinkingLevel
+    thinkingConfig: {
+      thinkingLevel: extra.thinkingLevel || GEMINI_THINKING_LEVEL,
+    },
+  };
+  if (extra.systemInstruction) cfg.systemInstruction = extra.systemInstruction;
+  // Cho phép tắt thinking (model/summary ngắn)
+  if (extra.thinking === false) delete cfg.thinkingConfig;
+  return cfg;
+}
+
 
 // ==========================================
 // DISCORD CLIENT
@@ -1179,8 +1233,11 @@ client.once('ready', async () => {
         const chat = aiInstance.chats.create({
           model: DEFAULT_MODEL,
           config: {
-            maxOutputTokens: 300,
-            systemInstruction: 'Tóm tắt hội thoại ticket Discord bằng tiếng Việt, 3–6 gạch đầu dòng.',
+            ...buildGeminiChatConfig({
+              maxOutputTokens: 300,
+              thinkingLevel: 'LOW',
+              systemInstruction: 'Tóm tắt hội thoại ticket Discord bằng tiếng Việt, 3–6 gạch đầu dòng.',
+            }),
           },
         });
         const r = await chat.sendMessage({ message: transcript.slice(0, 3500) });
@@ -1406,7 +1463,7 @@ client.on('interactionCreate', async (interaction) => {
           if (pk.gemini) {
             activeAi = new GoogleGenAI({ apiKey: pk.gemini });
           }
-          selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
+          selectedModel = (ticketData.selectedModel && String(ticketData.selectedModel).trim()) || DEFAULT_MODEL;
           selectedPersona = ticketData.selectedPersona || selectedPersona;
           customPersonaText = ticketData.customPersonaText || customPersonaText;
         }
@@ -1440,7 +1497,7 @@ client.on('interactionCreate', async (interaction) => {
           selectedPersona === 'custom'
             ? `custom_${(customPersonaText || '').slice(0, 40).replace(/\s+/g, '_')}`
             : selectedPersona;
-        const sessionKey = `${interaction.user.id}_${interaction.channelId}_${selectedModel}_${personaKeyPart}`;
+        const sessionKey = `${interaction.user.id}_${interaction.channelId}_${selectedModel}_${personaKeyPart}_${resolveThinkingLevel(ticketData)}`;
         if (!activeAi) {
           return interaction.editReply('❌ Regenerate hiện hỗ trợ phiên Gemini.');
         }
@@ -1449,11 +1506,7 @@ client.on('interactionCreate', async (interaction) => {
           const chatSession = activeAi.chats.create({
             model: selectedModel,
             history: restoredHistory,
-            config: {
-              systemInstruction,
-              maxOutputTokens: 8192,
-              thinkingConfig: { thinkingLevel: 'medium' },
-            },
+            config: buildGeminiChatConfig({ systemInstruction, maxOutputTokens: 8192, thinkingLevel: resolveThinkingLevel(typeof ticketData !== "undefined" ? ticketData : null) }),
           });
           userSessions.set(sessionKey, chatSession);
         }
@@ -2151,7 +2204,7 @@ if (commandName === 'join') {
         systemInstruction += getKnowledgeSystemBlock(interaction.user.id, interaction.guildId || null);
         const chat = aiInstance.chats.create({
           model: DEFAULT_MODEL,
-          config: { systemInstruction, maxOutputTokens: 768 },
+          config: buildGeminiChatConfig({ systemInstruction, maxOutputTokens: 768, thinkingLevel: 'LOW' }),
         });
         const result = await chat.sendMessage({ message: question });
         consumeQuota(interaction.user.id, 'chat');
@@ -2214,7 +2267,7 @@ if (commandName === 'join') {
           lines.join('\n');
         const chat = aiInstance.chats.create({
           model: DEFAULT_MODEL,
-          config: { maxOutputTokens: 512, systemInstruction: 'Bạn là trợ lý tóm tắt hội thoại Discord, súc tích.' },
+          config: buildGeminiChatConfig({ maxOutputTokens: 512, systemInstruction: 'Bạn là trợ lý tóm tắt hội thoại Discord, súc tích.', thinkingLevel: 'LOW' }),
         });
         const result = await chat.sendMessage({ message: promptSum });
         const text = result?.text || 'Không tóm tắt được.';
@@ -2883,7 +2936,7 @@ client.on('messageCreate', async (message) => {
     if (ticketData) {
       selectedPersona = ticketData.selectedPersona || DEFAULT_PERSONA_ID;
       customPersonaText = ticketData.customPersonaText || null;
-      selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
+      selectedModel = (ticketData.selectedModel && String(ticketData.selectedModel).trim()) || DEFAULT_MODEL;
 
       let wantProv = providerFromModel(selectedModel) || providerForPersona(selectedPersona);
       const pk = { ...(ticketData.providerKeys || {}) };
@@ -2987,7 +3040,9 @@ client.on('messageCreate', async (message) => {
           if (key.startsWith(String(message.author.id))) userSessions.delete(key);
         }
         try { clearSessionsByPrefix(String(message.author.id)); } catch (_) {}
-        const effective = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null);
+        const effective = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null, {
+          forceVi: looksLikeVietnamese(message.content || ''),
+        });
         const label =
           code === 'auto'
             ? `🌐 Auto → ${languageDisplay(effective)}`
@@ -3001,13 +3056,46 @@ client.on('messageCreate', async (message) => {
       }
     }
 
+
+    // Đổi Thinking Level nhanh (ticket): thinking: low|medium|high
+    {
+      const thSrc = (typeof prompt === 'string' ? prompt : (message.content || '')).replace(/<@!?\d+>/g, '').trim();
+      const thMatch = thSrc.match(/^thinking(?:\s*level)?\s*[:：]\s*(low|medium|high|l|m|h)\s*$/i);
+      if (thMatch) {
+        if (!ticketData) {
+          await message.reply('🧠 Thinking Level chỉ đổi trong **ticket**. Mở ticket rồi chọn menu hoặc gõ `thinking: medium`.').catch(() => {});
+          return;
+        }
+        const map = { low: 'LOW', l: 'LOW', medium: 'MEDIUM', m: 'MEDIUM', high: 'HIGH', h: 'HIGH' };
+        const level = map[String(thMatch[1]).toLowerCase()] || 'MEDIUM';
+        await setTicketThinkingLevel(message.channel.id, level);
+        ticketData.thinkingLevel = level;
+        for (const key of [...userSessions.keys()]) {
+          if (key.includes(String(message.channel.id))) userSessions.delete(key);
+        }
+        const tips = {
+          LOW: 'Siêu nhanh — ít suy nghĩ.',
+          MEDIUM: 'Cân bằng (mặc định).',
+          HIGH: 'Suy nghĩ sâu — chậm hơn, hợp bài khó.',
+        };
+        await message.reply(
+          `🧠 **Thinking Level: \`${level}\`** — ${tips[level] || ''}\n` +
+            `_(Chỉ Gemini. Session ticket đã reset — nhắn tiếp để thử.)_`
+        ).catch(() => {});
+        return;
+      }
+    }
+
     // Session tách theo model + persona để đổi tính cách không dính lịch sử cũ
     const personaKeyPart =
       selectedPersona === 'custom'
         ? `custom_${(customPersonaText || '').slice(0, 40).replace(/\s+/g, '_')}`
         : selectedPersona;
-    const langForSession = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null);
-    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}_${langForSession}`;
+    const langForSession = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null, {
+      forceVi: looksLikeVietnamese(prompt),
+    });
+    const thinkLv = resolveThinkingLevel(ticketData);
+    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}_${langForSession}_${thinkLv}`;
 
     const aiNameResolved = resolveAiDisplayName(ticketData, userPrefs);
     let systemInstruction = getSystemInstructionForPersona(
@@ -3016,7 +3104,7 @@ client.on('messageCreate', async (message) => {
       customPersonaText,
       aiNameResolved
     );
-    systemInstruction += '\n\n' + getLanguageSystemBlock(resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null));
+    systemInstruction += '\n\n' + getLanguageSystemBlock(langForSession);
     systemInstruction += '\n\n' + getPromptShieldBlock();
     if (userPrefs.replyMode === 'strict') {
       systemInstruction += '\n\n' + getStrictModeBlock();
@@ -3040,11 +3128,7 @@ client.on('messageCreate', async (message) => {
         const chatSession = activeAi.chats.create({
           model: selectedModel,
           history: restoredHistory,
-          config: {
-            systemInstruction,
-            maxOutputTokens: 8192,
-            thinkingConfig: { thinkingLevel: 'medium' },
-          },
+          config: buildGeminiChatConfig({ systemInstruction, maxOutputTokens: 8192, thinkingLevel: resolveThinkingLevel(typeof ticketData !== "undefined" ? ticketData : null) }),
         });
         userSessions.set(sessionKey, chatSession);
         if (restoredHistory.length > 0) {
