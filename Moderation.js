@@ -1,8 +1,9 @@
 // Moderation.js — lọc spam / link lạ trong kênh AI (Admin bật theo server)
 const fs = require('fs').promises;
 const path = require('path');
+const { dataFile } = require('./paths.js');
 
-const MOD_FILE = path.join(__dirname, 'data', 'moderation.json');
+const MOD_FILE = dataFile('moderation.json');
 
 /** @type {Map<string, { enabled: boolean, deleteMsg: boolean, maxRepeats: number }>} */
 let settings = new Map();
