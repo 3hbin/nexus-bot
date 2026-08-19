@@ -225,6 +225,7 @@ async function translateTextFull(ai, text) {
     config: buildGeminiChatConfig({
       maxOutputTokens: 8192,
       thinkingLevel: 'LOW',
+      tools: false,
       systemInstruction:
         'Bạn là dịch giả chuyên nghiệp. ' +
         'Nếu input chủ yếu tiếng Việt → dịch sang English. ' +
@@ -602,7 +603,78 @@ function buildGeminiChatConfig(extra = {}) {
   };
   if (extra.systemInstruction) cfg.systemInstruction = extra.systemInstruction;
   if (extra.thinking === false) delete cfg.thinkingConfig;
+
+  // Built-in tools — bật mặc định (tắt từng cái bằng env)
+  // GEMINI_GOOGLE_SEARCH=0     → tắt Search
+  // GEMINI_GOOGLE_MAPS=0       → tắt Maps
+  // GEMINI_CODE_EXECUTION=0    → tắt chạy Python sandbox
+  // GEMINI_FILE_SEARCH_STORE=id → bật File Search (RAG); không set = tắt
+  const tools = [];
+  const flagOn = (envName, defaultOn = true) => {
+    const v = String(process.env[envName] ?? (defaultOn ? '1' : '0')).trim().toLowerCase();
+    return v !== '0' && v !== 'false' && v !== 'off';
+  };
+  const enableSearch =
+    extra.googleSearch === true ||
+    (extra.googleSearch !== false && flagOn('GEMINI_GOOGLE_SEARCH', true));
+  const enableMaps =
+    extra.googleMaps === true ||
+    (extra.googleMaps !== false && flagOn('GEMINI_GOOGLE_MAPS', true));
+  const enableCode =
+    extra.codeExecution === true ||
+    (extra.codeExecution !== false && flagOn('GEMINI_CODE_EXECUTION', true));
+  const fileStore =
+    (extra.fileSearchStore && String(extra.fileSearchStore).trim()) ||
+    (process.env.GEMINI_FILE_SEARCH_STORE || process.env.VERTEX_RAG_STORE_ID || '').trim();
+  const enableFileSearch =
+    extra.fileSearch === true ||
+    (extra.fileSearch !== false && !!fileStore);
+
+  // Tắt hết tool khi extra.tools === false (dịch / tóm tắt ngắn)
+  if (extra.tools !== false) {
+    if (enableSearch) tools.push({ googleSearch: {} });
+    if (enableMaps) tools.push({ googleMaps: {} });
+    if (enableCode) tools.push({ codeExecution: {} });
+    if (enableFileSearch && fileStore) {
+      tools.push({ fileSearch: { fileSearchStores: [fileStore] } });
+    }
+  }
+  if (tools.length) cfg.tools = tools;
   return cfg;
+}
+
+/** Gắn nguồn Google Search (nếu có) vào cuối câu trả lời */
+function appendGroundingSources(replyText, result) {
+  try {
+    const meta = result?.candidates?.[0]?.groundingMetadata;
+    if (!meta) return replyText;
+    const chunks = meta.groundingChunks || [];
+    const links = [];
+    let hasMaps = false;
+    let hasWeb = false;
+    for (const c of chunks) {
+      // Google Maps place / maps URI
+      const mapsUri = c?.maps?.uri || c?.maps?.url || c?.place?.uri;
+      const mapsTitle = c?.maps?.title || c?.place?.placeAnswerSources?.[0]?.title || '';
+      if (mapsUri && /^https?:\/\//i.test(String(mapsUri))) {
+        hasMaps = true;
+        const t = String(mapsTitle || mapsUri).slice(0, 80);
+        links.push(t !== mapsUri ? `- 📍 [${t}](${mapsUri})` : `- 📍 ${mapsUri}`);
+      }
+      const uri = c?.web?.uri || c?.web?.url;
+      const title = (c?.web?.title || uri || '').slice(0, 80);
+      if (uri && /^https?:\/\//i.test(String(uri))) {
+        hasWeb = true;
+        links.push(title && title !== uri ? `- [${title}](${uri})` : `- ${uri}`);
+      }
+    }
+    const uniq = [...new Set(links)].slice(0, 6);
+    if (!uniq.length) return replyText;
+    const label = hasMaps && hasWeb ? 'Google Search / Maps' : hasMaps ? 'Google Maps' : 'Google Search';
+    return String(replyText || '').trim() + `\n\n**🌐 Nguồn (${label}):**\n` + uniq.join('\n');
+  } catch (_) {
+    return replyText;
+  }
 }
 
 /** Fallback khi model chính 503/unavailable */
@@ -2218,7 +2290,7 @@ if (commandName === 'join') {
         systemInstruction += getKnowledgeSystemBlock(interaction.user.id, interaction.guildId || null);
         const chat = aiInstance.chats.create({
           model: DEFAULT_MODEL,
-          config: buildGeminiChatConfig({ systemInstruction, maxOutputTokens: 768, thinkingLevel: 'LOW' }),
+          config: buildGeminiChatConfig({ systemInstruction, maxOutputTokens: 768, thinkingLevel: 'LOW', tools: false }),
         });
         const result = await chat.sendMessage({ message: question });
         consumeQuota(interaction.user.id, 'chat');
@@ -2281,7 +2353,7 @@ if (commandName === 'join') {
           lines.join('\n');
         const chat = aiInstance.chats.create({
           model: DEFAULT_MODEL,
-          config: buildGeminiChatConfig({ maxOutputTokens: 512, systemInstruction: 'Bạn là trợ lý tóm tắt hội thoại Discord, súc tích.', thinkingLevel: 'LOW' }),
+          config: buildGeminiChatConfig({ maxOutputTokens: 512, systemInstruction: 'Bạn là trợ lý tóm tắt hội thoại Discord, súc tích.', thinkingLevel: 'LOW', tools: false }),
         });
         const result = await chat.sendMessage({ message: promptSum });
         const text = result?.text || 'Không tóm tắt được.';
@@ -3472,6 +3544,7 @@ return message.reply(detailMsg.slice(0, 1900));
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
+    replyText = appendGroundingSources(replyText, result);
     replyText = sanitizeDiscordMath(replyText);
     replyText = stripMediaUrls(replyText);
     // Nếu model chỉ trả URL gif, giữ câu ngắn
