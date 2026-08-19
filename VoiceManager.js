@@ -255,9 +255,16 @@ async function speakInGuild(guildId, text, opts) {
   }
 }
 
+/** Lấy connection hiện tại của guild (dùng cho VoiceListener) */
+function getVoiceConnectionFor(guildId) {
+  const entry = connections.get(String(guildId));
+  return entry && entry.connection ? entry.connection : null;
+}
+
 module.exports = {
   isVoiceAvailable: isVoiceAvailable,
   joinVoiceChannel: joinVoiceChannel,
   leaveVoice: leaveVoice,
   speakInGuild: speakInGuild,
+  getVoiceConnectionFor: getVoiceConnectionFor,
 };
