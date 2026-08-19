@@ -426,7 +426,7 @@ async function handleTicketInteraction(interaction) {
         ownerId: String(member.user.id),
         userId: String(member.user.id),
         userApiKey: null,
-        selectedModel: 'gemini-3.6-flash',
+        selectedModel: 'gemini-3.7-flash',
         selectedPersona: DEFAULT_PERSONA_ID,
         customPersonaText: null,
       });
