@@ -62,7 +62,8 @@ const PERSONA_PROVIDER = {
 /** Model list cho menu ticket (value = model id API) */
 const PROVIDER_MODELS = {
   gemini: [
-    { label: 'Gemini 3.6 Flash', description: 'Mặc định, nhanh', value: 'gemini-3.6-flash' },
+    { label: 'Gemini 3.7 Flash', description: 'Mặc định mới nhất, nhanh', value: 'gemini-3.7-flash' },
+    { label: 'Gemini 3.6 Flash', description: 'Nhanh, ổn định', value: 'gemini-3.6-flash' },
     { label: 'Gemini 3.5 Flash', description: 'Cân bằng', value: 'gemini-3.5-flash' },
     { label: 'Gemini 3.5 Flash-Lite', description: 'Rẻ, nhanh', value: 'gemini-3.5-flash-lite' },
     { label: 'Gemini 3.1 Pro', description: 'Sâu (cần billing)', value: 'gemini-3.1-pro' },
