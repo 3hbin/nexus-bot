@@ -149,13 +149,7 @@ const {
   joinVoiceChannel,
   leaveVoice,
   speakInGuild,
-  getVoiceConnectionFor,
 } = require('./VoiceManager.js');
-const {
-  startListening,
-  stopListening,
-  isListening,
-} = require('./VoiceListener.js');
 
 /** Lưu prompt gần nhất để nút Regenerate — key: userId_channelId */
 const lastPrompts = new Map();
@@ -893,16 +887,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName('leave')
     .setDescription('Bot leaves the voice channel'),
-  new SlashCommandBuilder()
-    .setName('listen')
-    .setDescription('Bật/tắt bot NGHE và trả lời trực tiếp bằng giọng nói trong voice (chat thoại 2 chiều)')
-    .addStringOption((opt) =>
-      opt
-        .setName('mode')
-        .setDescription('on hoặc off')
-        .setRequired(true)
-        .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })
-    ),
 
   new SlashCommandBuilder()
     .setName('summary')
@@ -2018,86 +2002,10 @@ if (commandName === 'join') {
       }
     }
 
-    if (commandName === 'listen') {
-      if (!interaction.guildId) {
-        return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
-      }
-      const mode = interaction.options.getString('mode');
-      const on = mode === 'on';
-
-      if (!on) {
-        const r = stopListening(interaction.guildId);
-        return interaction.reply({ content: r.message, ephemeral: true });
-      }
-
-      const ch = interaction.member?.voice?.channel;
-      if (!ch) {
-        return interaction.reply({
-          content: '❌ Vào **voice channel** trước, rồi `/listen mode:on`.',
-          ephemeral: true,
-        });
-      }
-      await interaction.deferReply({ ephemeral: true });
-
-      // Đảm bảo bot đã join & Ready trước khi bật listener
-      let connection = getVoiceConnectionFor(interaction.guildId);
-      if (!connection) {
-        const jr = await joinVoiceChannel(ch);
-        if (!jr || !jr.ok) {
-          return interaction.editReply('⚠️ ' + (jr && jr.message ? jr.message : 'Không join được voice.'));
-        }
-        connection = getVoiceConnectionFor(interaction.guildId);
-      }
-      if (!connection) {
-        return interaction.editReply('❌ Không lấy được voice connection — thử `/join` trước rồi `/listen mode:on`.');
-      }
-
-      // Chuẩn bị Gemini instance + hàm speak để listener dùng
-      const userKey = getUserGeminiKey(interaction.user.id);
-      const aiForListen = userKey ? new GoogleGenAI({ apiKey: userKey }) : aiInstance;
-      if (!aiForListen) {
-        return interaction.editReply(
-          '❌ Chưa có Gemini key khả dụng. DM cần `key gemini: ...` riêng, hoặc bot cần GEMINI_API_KEY.'
-        );
-      }
-
-      const r = startListening({
-        guildId: interaction.guildId,
-        connection,
-        ai: aiForListen,
-        model: DEFAULT_MODEL,
-        shouldListenTo: (userId) => userId !== client.user.id,
-        speak: async (text) => {
-          try {
-            await speakInGuild(interaction.guildId, text, {
-              userVoiceChannel: ch,
-              gender: getUserPrefs(interaction.user.id).voiceGender || 'nu',
-            });
-          } catch (e) {
-            console.warn('[listen] speak-back error', e && e.message);
-          }
-        },
-      });
-
-      if (!r.ok) {
-        return interaction.editReply('⚠️ ' + r.message);
-      }
-      return interaction.editReply(
-        '👂 **Chat thoại 2 chiều: BẬT**\n' +
-          '• Cứ nói chuyện bình thường trong voice, bot sẽ tự nghe và trả lời bằng giọng.\n' +
-          '• Im lặng khoảng ~1s sau khi bạn dứt câu thì bot mới xử lý (tránh cắt ngang).\n' +
-          '• Tắt: `/listen mode:off`\n' +
-          '_(Trên host free, UDP có thể không ổn định — nếu bot không phản hồi, thử lại hoặc dùng chat chữ.)_'
-      );
-    }
-
     if (commandName === 'leave') {
       if (!interaction.guildId) {
         return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
       }
-      try {
-        stopListening(interaction.guildId);
-      } catch (e) {}
       try {
         leaveVoice(interaction.guildId);
       } catch (e) {
@@ -2657,4 +2565,953 @@ client.on('messageCreate', async (message) => {
   const isDM = !message.guild;
   const guildId = message.guildId;
   const targetChannel = guildId ? allowedChannels.get(guildId) : null;
-  const isMentioned = message.mentions.has(clien
+  const isMentioned = message.mentions.has(client.user);
+
+  // DM: luôn cho chat (dùng GEMINI_API_KEY bot + model mặc định) — không cần ticket / chọn model
+  // Server: ticket HOẶC setchannel HOẶC mention
+  if (!isDM && !ticketData && targetChannel && message.channel.id !== targetChannel) return;
+  if (!isDM && !ticketData && !targetChannel && !isMentioned) return;
+
+  // Moderation (kênh AI / ticket)
+  try {
+    const isAiCh =
+      !!ticketData ||
+      (message.guildId && allowedChannels.get(message.guildId) === message.channel.id);
+    const modHit = checkMessageModeration(message, { isAiChannel: isAiCh });
+    if (modHit) {
+      adminLog({
+        title: '🛡️ Moderation',
+        description: modHit.reason,
+        color: 0xed4245,
+        fields: [
+          { name: 'User', value: `${message.author.tag} (\`${message.author.id}\`)`, inline: true },
+          { name: 'Kênh', value: `<#${message.channel.id}>`, inline: true },
+          { name: 'Nội dung', value: (message.content || '').slice(0, 200) || '(trống)', inline: false },
+        ],
+      }).catch(() => {});
+      if (modHit.action === 'delete') {
+        await message.delete().catch(() => {});
+        await message.channel
+          .send({ content: `⚠️ <@${message.author.id}> ${modHit.reason}` })
+          .then((m) => setTimeout(() => m.delete().catch(() => {}), 8000))
+          .catch(() => {});
+        return;
+      }
+      await message.reply(`⚠️ ${modHit.reason}`).catch(() => {});
+    }
+  } catch (modErr) {
+    console.warn('moderation', modErr && modErr.message);
+  }
+
+
+  const now = Date.now();
+  const cooldownAmount = CHAT_COOLDOWN_SECONDS * 1000;
+  if (userCooldowns.has(message.author.id)) {
+    const expirationTime = userCooldowns.get(message.author.id) + cooldownAmount;
+    if (now < expirationTime) {
+      const timeLeft = ((expirationTime - now) / 1000).toFixed(1);
+      return message
+        .reply(`⏱️ Bạn gửi tin nhắn quá nhanh! Vui lòng chờ **${timeLeft}s** nữa để tiếp tục chat.`)
+        .then((m) => setTimeout(() => m.delete().catch(() => {}), 3000));
+    }
+  }
+  userCooldowns.set(message.author.id, now);
+
+  // Hạn mức chat / ngày (giới hạn bot tự quản)
+  const chatQuota = checkQuota(message.author.id, 'chat');
+  if (!chatQuota.allowed) {
+    return message.reply(chatQuota.message).catch(() => {});
+  }
+
+  // Khóa Gemini chỉ khi dùng KEY BOT — ticket/DM có key riêng vẫn chat được
+  const earlyTicket = ticketData || getTicketByChannel(message.channel.id);
+  const isDMEarly = !message.guild;
+  const usingOwnTicketKey = !!(
+    (earlyTicket &&
+      (earlyTicket.userApiKey ||
+        (earlyTicket.providerKeys && Object.keys(earlyTicket.providerKeys).length > 0))) ||
+    (isDMEarly && getUserGeminiKey(message.author.id))
+  );
+  if (!usingOwnTicketKey) {
+    const geminiLock = getGeminiLockStatus();
+    if (geminiLock.locked) {
+      return message.reply(geminiLock.message).catch(() => {});
+    }
+  }
+
+  const prompt = message.content.replace(/<@!?\d+>/g, '').trim();
+
+  // Ảnh đính kèm (vision) — png/jpg/webp/gif
+  const imageAtts = Array.from(message.attachments?.values?.() || []).filter((a) => {
+    const ct = (a.contentType || '').toLowerCase();
+    const name = (a.name || '').toLowerCase();
+    return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(name);
+  });
+  // Tin nhắn thoại Discord / file audio (webm có thể là video — ưu tiên video nếu contentType video)
+  const audioAtts = Array.from(message.attachments?.values?.() || []).filter((a) => {
+    const ct = (a.contentType || '').toLowerCase();
+    const name = (a.name || '').toLowerCase();
+    if (ct.startsWith('video/')) return false;
+    if (/\.(mp4|mov|mkv|avi)$/i.test(name)) return false;
+    return (
+      ct.startsWith('audio/') ||
+      ct.includes('ogg') ||
+      ct.includes('voice') ||
+      /\.(ogg|mp3|wav|m4a|opus)$/i.test(name) ||
+      (/\.webm$/i.test(name) && !ct.startsWith('video/'))
+    );
+  });
+  // Video đính kèm (Gemini multimodal)
+  const videoAtts = Array.from(message.attachments?.values?.() || []).filter((a) => {
+    const ct = (a.contentType || '').toLowerCase();
+    const name = (a.name || '').toLowerCase();
+    return (
+      ct.startsWith('video/') ||
+      /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(name)
+    );
+  });
+
+  if (!prompt && imageAtts.length === 0 && audioAtts.length === 0 && videoAtts.length === 0) {
+    try {
+      if (isDM) {
+        {
+          const hasK = !!getUserGeminiKey(message.author.id);
+          await message.reply(
+            '👋 **Chat DM với Nexus AI** (không cần ticket)\n' +
+              (hasK
+                ? '✅ Đã có key Gemini — gửi câu hỏi để chat.\nModel **mặc định** — không cần chọn model.\n'
+                : '🔑 Trước hết gửi:\n```\nkey gemini: AIza...\n```\nLấy key: https://aistudio.google.com\n') +
+              '• `keys` — xem đã lưu key chưa\n' +
+              '• `key gemini: xóa` — xóa key\n' +
+              '• `help` / `/reset` — hướng dẫn / xóa lịch sử'
+          );
+        }
+      } else {
+        await message.reply('Bạn cần Nexus AI hỗ trợ gì nào? (gửi **chữ**, **ảnh**, **video** hoặc **tin nhắn thoại**)');
+      }
+    } catch (err) {}
+    return;
+  }
+
+  // Toxic shield — chặn lời lẽ xúc phạm trước khi gọi API
+    const jail = detectJailbreakPrompt(prompt);
+  if (jail && jail.blocked) {
+    try {
+      adminLog({
+        title:
+          jail.reason === 'harmful_cyber'
+            ? '🛡️ Prompt Shield — chặn tấn công mạng'
+            : '🛡️ Prompt Shield — chặn jailbreak',
+        description: (prompt || '').slice(0, 500),
+        color: 0xed4245,
+        fields: [
+          { name: 'User', value: `${message.author.tag} (\`${message.author.id}\`)`, inline: true },
+          { name: 'Kênh', value: `<#${message.channel.id}>`, inline: true },
+          { name: 'Mức', value: `${jail.severity}${jail.reason ? ' · ' + jail.reason : ''}`, inline: true },
+        ],
+      }).catch(() => {});
+    } catch (_) {}
+    return message.reply(jail.reply).catch(() => {});
+  }
+
+// Ticket bật Trẻ trâu 💀 → bỏ lọc chửi bậy (vẫn giữ Prompt Shield jailbreak)
+  const skipToxic =
+    !!(ticketData && ticketData.allowToxicSwear) ||
+    !!(ticketData && ticketData.selectedPersona === 'tretrau_toxic');
+  const toxicReply = skipToxic ? null : handleToxicBehavior(prompt);
+  if (toxicReply) {
+    adminLog({
+      title: '⚠️ Toxic blocked',
+      description: prompt.slice(0, 300),
+      color: 0xed4245,
+      fields: [
+        { name: 'User', value: `${message.author.tag} (\`${message.author.id}\`)`, inline: true },
+        { name: 'Channel', value: `<#${message.channel.id}>`, inline: true },
+      ],
+    }).catch(() => {});
+    return message.reply(toxicReply).catch(() => {});
+  }
+
+  // Phát hiện cảm xúc user (dùng cho tone + GIF + quick reply)
+  const { id: userEmotion } = detectUserEmotion(prompt);
+
+  // Phản hồi nhanh cho chào / cảm ơn rất ngắn — tiết kiệm API
+  const quickReply = tryQuickEmotionalReply(prompt, userEmotion);
+  if (quickReply) {
+    let gifUrl = null;
+    try {
+      gifUrl = await resolveEmotionalGif({
+        userEmotion,
+        replyText: quickReply,
+        getGifForEmotion,
+        getGifByKeyword,
+        channelId: message.channel.id,
+      });
+    } catch (_) {}
+    const embeds = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
+    return message.reply({ content: quickReply, embeds }).catch(() => message.reply(quickReply).catch(() => {}));
+  }
+
+  // Không khóa @everyone khi đang trả lời — dễ kẹt kênh nếu bot lỗi/restart
+  try {
+    try { await message.channel.sendTyping(); } catch (err) {}
+
+    // Không gán key bot sẵn — tránh DM/ticket lách qua
+    let activeAi = null;
+    let selectedModel = DEFAULT_MODEL;
+    let usingTicketKey = false;
+    let selectedPersona = DEFAULT_PERSONA_ID;
+    let customPersonaText = null;
+
+    // Persona ngoài ticket lấy từ UserPrefs (/persona)
+    const userPrefs = getUserPrefs(message.author.id);
+    selectedPersona = userPrefs.selectedPersona || DEFAULT_PERSONA_ID;
+    customPersonaText = userPrefs.customPersonaText || null;
+
+    let externalProvider = null; // chatgpt|claude|grok|deepseek
+    let externalApiKey = null;
+
+    // DM: chặn sớm nếu chưa có key Gemini user
+    if (isDM) {
+      const userKeyEarly = getUserGeminiKey(message.author.id);
+      if (!userKeyEarly) {
+        return message.reply(
+          '🔑 **Chat DM cần key Gemini của bạn** (không dùng ticket, không dùng key bot).\n\n' +
+            'Gửi một tin:\n' +
+            '```\nkey gemini: AIza...\n```\n' +
+            'Lấy key: https://aistudio.google.com\n' +
+            'Model **mặc định** — không cần chọn model.\n' +
+            'Gõ `keys` để kiểm tra.'
+        );
+      }
+      activeAi = new GoogleGenAI({ apiKey: userKeyEarly });
+      selectedModel = DEFAULT_MODEL;
+      usingTicketKey = true;
+    }
+
+    if (ticketData) {
+      selectedPersona = ticketData.selectedPersona || DEFAULT_PERSONA_ID;
+      customPersonaText = ticketData.customPersonaText || null;
+      selectedModel = ticketData.selectedModel || DEFAULT_MODEL;
+
+      let wantProv = providerFromModel(selectedModel) || providerForPersona(selectedPersona);
+      const pk = { ...(ticketData.providerKeys || {}) };
+      if (ticketData.userApiKey && !pk.gemini) pk.gemini = ticketData.userApiKey;
+
+      const pickKey = (prov) => pk[prov] || null;
+
+      // 1) Đúng provider của model đã chọn
+      let keyForWant = pickKey(wantProv);
+      // 2) Nếu không có key đúng provider nhưng có key khác → chuyển sang provider đó
+      if (!keyForWant) {
+        const order = ['gemini', 'chatgpt', 'deepseek', 'claude', 'grok'];
+        for (const p of order) {
+          if (pickKey(p)) {
+            wantProv = p;
+            keyForWant = pickKey(p);
+            // Đổi model mặc định cho provider nếu model hiện tại lệch nhà
+            if (providerFromModel(selectedModel) !== p) {
+              const defaults = {
+                gemini: 'gemini-3.6-flash',
+                chatgpt: 'gpt-5-mini',
+                claude: 'claude-sonnet-5-20250514',
+                grok: 'grok-4.6',
+                deepseek: 'deepseek-chat',
+              };
+              selectedModel = defaults[p] || selectedModel;
+            }
+            break;
+          }
+        }
+      }
+
+      if (!keyForWant) {
+        // Ticket BẮT BUỘC có key user — không dùng key bot (tránh chat free ngoài ý muốn)
+        return message.reply(
+          '🔑 **Ticket chưa có API key** — nhập key trước rồi chat nhé.\n\n' +
+            helpKeyText() +
+            '\n\nVí dụ: `key gemini: AIza...` hoặc `key chatgpt: sk-...`'
+        );
+      } else if (wantProv !== 'gemini') {
+        externalProvider = wantProv;
+        externalApiKey = keyForWant;
+        usingTicketKey = true;
+        activeAi = null;
+      } else {
+        activeAi = new GoogleGenAI({ apiKey: keyForWant });
+        usingTicketKey = true;
+      }
+    }
+
+    if (!externalProvider && !activeAi) {
+      if (isDM) {
+        // DM: BẮT BUỘC key Gemini của user — model mặc định, không chọn model
+        const userKey = getUserGeminiKey(message.author.id);
+        if (!userKey) {
+          return message.reply(
+            '🔑 **Chat DM cần key Gemini của bạn** (không dùng ticket).\n\n' +
+              'Gửi một tin:\n' +
+              '```\nkey gemini: AIza...\n```\n' +
+              'Lấy key free: https://aistudio.google.com\n' +
+              'Model: **mặc định** — không cần chọn model.'
+          );
+        }
+        activeAi = new GoogleGenAI({ apiKey: userKey });
+        selectedModel = DEFAULT_MODEL;
+        usingTicketKey = true; // coi như key riêng → không dính lock key bot
+        externalProvider = null;
+      } else if (aiInstance) {
+        activeAi = aiInstance;
+      } else {
+        return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
+      }
+    }
+
+    // DM: luôn khóa model mặc định + chỉ key user
+    if (isDM) {
+      selectedModel = DEFAULT_MODEL;
+      externalProvider = null;
+      const userKey = getUserGeminiKey(message.author.id);
+      if (!userKey) {
+        return message.reply(
+          '🔑 **Chat DM cần key Gemini.** Gửi: `key gemini: AIza...`'
+        );
+      }
+      activeAi = new GoogleGenAI({ apiKey: userKey });
+      usingTicketKey = true;
+    }
+
+
+
+    // Đổi ngôn ngữ nhanh: lang: en | lang: ko | lang: vi | lang: auto
+    {
+      const langSrc = (typeof prompt === 'string' ? prompt : (message.content || '')).replace(/<@!?\d+>/g, '').trim();
+      const langMatch = langSrc.match(/^lang(?:uage)?\s*[:：]\s*([\w-]+)\s*$/i)
+        || langSrc.match(/^ngôn\s*ngữ\s*[:：]\s*([\w-]+)\s*$/i);
+      if (langMatch) {
+        const code = langMatch[1].toLowerCase();
+        setUserLanguage(message.author.id, code);
+        // Xóa session cũ để AI không kẹt tiếng Việt / lịch sử cũ
+        for (const key of [...userSessions.keys()]) {
+          if (key.startsWith(String(message.author.id))) userSessions.delete(key);
+        }
+        try { clearSessionsByPrefix(String(message.author.id)); } catch (_) {}
+        const effective = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null);
+        const label =
+          code === 'auto'
+            ? `🌐 Auto → ${languageDisplay(effective)}`
+            : languageDisplay(code);
+        await message.reply(
+          `🌐 **Language / Ngôn ngữ AI:** ${label}\n` +
+            `Next replies in ticket / AI channel / DM will use this language.\n` +
+            `Chat again to test (session reset).`
+        ).catch(() => {});
+        return;
+      }
+    }
+
+    // Session tách theo model + persona để đổi tính cách không dính lịch sử cũ
+    const personaKeyPart =
+      selectedPersona === 'custom'
+        ? `custom_${(customPersonaText || '').slice(0, 40).replace(/\s+/g, '_')}`
+        : selectedPersona;
+    const langForSession = resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null);
+    const sessionKey = `${message.author.id}_${message.channel.id}_${selectedModel}_${personaKeyPart}_${langForSession}`;
+
+    const aiNameResolved = resolveAiDisplayName(ticketData, userPrefs);
+    let systemInstruction = getSystemInstructionForPersona(
+      SYSTEM_INSTRUCTION,
+      selectedPersona,
+      customPersonaText,
+      aiNameResolved
+    );
+    systemInstruction += '\n\n' + getLanguageSystemBlock(resolveLanguageForUser(message.author.id, message.guild?.preferredLocale || null));
+    systemInstruction += '\n\n' + getPromptShieldBlock();
+    if (userPrefs.replyMode === 'strict') {
+      systemInstruction += '\n\n' + getStrictModeBlock();
+    }
+    if (ticketData?.contextNote) {
+      systemInstruction += `\n\n[Ghi chú ngữ cảnh ticket do user đặt]\n${ticketData.contextNote}`;
+    }
+    systemInstruction += getMemorySystemBlock(message.author.id);
+    systemInstruction += getKnowledgeSystemBlock(message.author.id, message.guildId || null);
+    systemInstruction +=
+      '\n\n[Code policy] Khi user xin code dài/full project: (1) tóm tắt cấu trúc ngắn, (2) mỗi file bọc trong code fence ```lang — hệ thống đổi thành LINK paste.';
+    if (audioAtts.length > 0) {
+      systemInstruction +=
+        '\n\n[Voice message] User gửi tin nhắn thoại. Listen carefully and reply naturally in the user selected language (2–5 câu, dễ đọc thành tiếng). Không markdown dài, không list dài, không code trừ khi bị hỏi code.';
+    }
+
+    if (!userSessions.has(sessionKey)) {
+      const restoredHistory = getSavedHistory(sessionKey);
+      // legacy block kept minimal — systemInstruction đã có ở trên
+      if (!externalProvider && activeAi) {
+        const chatSession = activeAi.chats.create({
+          model: selectedModel,
+          history: restoredHistory,
+          config: {
+            systemInstruction,
+            maxOutputTokens: 8192,
+            thinkingConfig: { thinkingLevel: 'medium' },
+          },
+        });
+        userSessions.set(sessionKey, chatSession);
+        if (restoredHistory.length > 0) {
+          console.log(`♻️ Đã khôi phục ${restoredHistory.length} tin nhắn lịch sử cho session ${sessionKey}`);
+        }
+      }
+    }
+
+    const chat = externalProvider ? null : userSessions.get(sessionKey);
+    // Gắn gợi ý cảm xúc vào tin nhắn (không đổi systemInstruction cố định của session)
+    let textPart =
+      prompt ||
+      (imageAtts.length
+        ? 'Hãy xem (các) ảnh đính kèm: mô tả nội dung, chữ trong ảnh (nếu có), và answer helpfully in the user selected language.'
+        : '');
+    if (userEmotion && userEmotion !== 'neutral' && prompt) {
+      const toneLine =
+        userEmotion === 'sad' || userEmotion === 'lonely' || userEmotion === 'anxious'
+          ? `[Cảm xúc user: ${userEmotion} — hãy đồng cảm nhẹ, giọng trấn an, vẫn trả lời đúng trọng tâm]`
+          : userEmotion === 'angry'
+            ? `[Cảm xúc user: angry — giữ bình tĩnh, không đáp trả gay gắt, tập trung giải quyết]`
+            : userEmotion === 'tired'
+              ? `[Cảm xúc user: tired — trả lời ngắn gọn, dễ đọc]`
+              : userEmotion === 'confused'
+                ? `[Cảm xúc user: confused — giải thích rõ, đơn giản]`
+                : `[Cảm xúc user: ${userEmotion} — điều chỉnh giọng cho phù hợp]`;
+      textPart = `${toneLine}\n\n${prompt}`;
+    }
+
+    // Tải ảnh → base64 cho Gemini vision (tối đa 3 ảnh, mỗi ảnh ≤ 4MB)
+    const visionParts = [];
+    if (imageAtts.length > 0) {
+      const fetchFn =
+        typeof globalThis.fetch === 'function'
+          ? globalThis.fetch
+          : (() => {
+              try {
+                return require('node-fetch');
+              } catch {
+                return null;
+              }
+            })();
+      const maxImages = Math.min(3, imageAtts.length);
+      for (let i = 0; i < maxImages; i++) {
+        const att = imageAtts[i];
+        if (att.size && att.size > 4 * 1024 * 1024) {
+          console.warn('Bỏ ảnh quá lớn', att.name, att.size);
+          continue;
+        }
+        try {
+          if (!fetchFn) break;
+          const res = await fetchFn(att.url, {
+            headers: { 'User-Agent': 'NexusAI-DiscordBot/1.0' },
+          });
+          if (!res.ok) continue;
+          const arr = await res.arrayBuffer();
+          if (!arr || arr.byteLength < 32 || arr.byteLength > 4 * 1024 * 1024) continue;
+          const b64 = Buffer.from(arr).toString('base64');
+          let mime = (att.contentType || 'image/png').split(';')[0].trim();
+          if (!mime.startsWith('image/')) {
+            if (/\.png$/i.test(att.name || '')) mime = 'image/png';
+            else if (/\.webp$/i.test(att.name || '')) mime = 'image/webp';
+            else if (/\.gif$/i.test(att.name || '')) mime = 'image/gif';
+            else mime = 'image/jpeg';
+          }
+          visionParts.push({ inlineData: { mimeType: mime, data: b64 } });
+        } catch (imgErr) {
+          console.warn('Tải ảnh vision lỗi:', imgErr && imgErr.message);
+        }
+      }
+    }
+
+    // Tải audio / tin nhắn thoại (tối đa 1 file ≤ 8MB)
+    if (audioAtts.length > 0) {
+      const fetchFn =
+        typeof globalThis.fetch === 'function'
+          ? globalThis.fetch
+          : (() => {
+              try {
+                return require('node-fetch');
+              } catch {
+                return null;
+              }
+            })();
+      const att = audioAtts[0];
+      if (fetchFn && (!att.size || att.size <= 8 * 1024 * 1024)) {
+        try {
+          const res = await fetchFn(att.url, {
+            headers: { 'User-Agent': 'NexusAI-DiscordBot/1.0' },
+          });
+          if (res.ok) {
+            const arr = await res.arrayBuffer();
+            if (arr && arr.byteLength >= 64 && arr.byteLength <= 8 * 1024 * 1024) {
+              const b64 = Buffer.from(arr).toString('base64');
+              let mime = (att.contentType || 'audio/ogg').split(';')[0].trim();
+              if (!mime.startsWith('audio/')) {
+                if (/\.mp3$/i.test(att.name || '')) mime = 'audio/mpeg';
+                else if (/\.wav$/i.test(att.name || '')) mime = 'audio/wav';
+                else if (/\.webm$/i.test(att.name || '')) mime = 'audio/webm';
+                else mime = 'audio/ogg';
+              }
+              visionParts.push({ inlineData: { mimeType: mime, data: b64 } });
+              if (!String(textPart).trim() || textPart === prompt) {
+                textPart =
+                  (prompt && prompt.trim()) ||
+                  '[User gửi tin nhắn thoại / file audio. Hãy nghe, hiểu nội dung, reply naturally in the user selected language.]';
+              }
+            }
+          }
+        } catch (auErr) {
+          console.warn('Tải audio lỗi:', auErr && auErr.message);
+        }
+      }
+    }
+
+    // Tải video đính kèm (tối đa 1 file, ≤ 15MB — inline Gemini)
+    let videoTooLarge = false;
+    if (videoAtts.length > 0) {
+      const fetchFn =
+        typeof globalThis.fetch === 'function'
+          ? globalThis.fetch
+          : (() => {
+              try {
+                return require('node-fetch');
+              } catch {
+                return null;
+              }
+            })();
+      const att = videoAtts[0];
+      const maxVid = 15 * 1024 * 1024;
+      if (att.size && att.size > maxVid) {
+        videoTooLarge = true;
+      } else if (fetchFn) {
+        try {
+          const res = await fetchFn(att.url, {
+            headers: { 'User-Agent': 'NexusAI-DiscordBot/1.0' },
+          });
+          if (res.ok) {
+            const arr = await res.arrayBuffer();
+            if (arr && arr.byteLength > maxVid) {
+              videoTooLarge = true;
+            } else if (arr && arr.byteLength >= 256) {
+              const b64 = Buffer.from(arr).toString('base64');
+              let mime = (att.contentType || 'video/mp4').split(';')[0].trim();
+              if (!mime.startsWith('video/')) {
+                if (/\.webm$/i.test(att.name || '')) mime = 'video/webm';
+                else if (/\.mov$/i.test(att.name || '')) mime = 'video/quicktime';
+                else mime = 'video/mp4';
+              }
+              visionParts.push({ inlineData: { mimeType: mime, data: b64 } });
+              if (!String(textPart).trim() || textPart === prompt) {
+                textPart =
+                  (prompt && prompt.trim()) ||
+                  '[User gửi file video. Hãy xem video, mô tả nội dung chính, nhân vật/hành động, and answer clearly in the user selected language.]';
+              }
+            }
+          }
+        } catch (vidErr) {
+          console.warn('Tải video lỗi:', vidErr && vidErr.message);
+        }
+      }
+      if (videoTooLarge) {
+        return message.reply(
+          '🎬 Video hơi nặng (giới hạn xem ~**15MB**).\n' +
+            'Thử: nén video, cắt ngắn hơn, hoặc gửi **ảnh** / mô tả bằng chữ.'
+        ).catch(() => {});
+      }
+      if (videoAtts.length && !visionParts.some((p) => p.inlineData && String(p.inlineData.mimeType || '').startsWith('video/'))) {
+        // tải fail
+        if (!prompt && imageAtts.length === 0 && audioAtts.length === 0) {
+          return message.reply('❌ Không tải được video. Thử gửi lại hoặc dùng file nhỏ hơn.').catch(() => {});
+        }
+      }
+    }
+
+    // Payload multimodal: text + ảnh/audio/video
+    let messagePayload;
+    if (visionParts.length > 0) {
+      messagePayload = [{ text: textPart }, ...visionParts];
+    } else {
+      messagePayload = textPart;
+    }
+
+    let result;
+    try {
+      // Ảnh / video / audio multimodal → ưu tiên Gemini (provider ngoài không nhận đủ file)
+      const hasVisionMedia = visionParts.some(
+        (p) => p && p.inlineData && p.inlineData.mimeType
+      );
+      if (hasVisionMedia && externalProvider) {
+        if (activeAi) {
+          externalProvider = null;
+          externalApiKey = null;
+        } else {
+          return message.reply(
+            '📎 File media (ảnh/video/audio) cần **key Gemini** trong ticket.\n' +
+              'Gửi: `key gemini: AIza...` rồi gửi lại file.\n' +
+              '_(ChatGPT/Claude/Grok/DeepSeek chưa xem được video trong bot này)_'
+          ).catch(() => {});
+        }
+      }
+      if (externalProvider && externalApiKey) {
+        // ChatGPT / Claude / Grok / DeepSeek — text only
+        let history = [];
+        try {
+          history = getSavedHistory(sessionKey) || [];
+        } catch (_) {}
+        const textOut = await chatExternal({
+          provider: externalProvider,
+          apiKey: externalApiKey,
+          model: selectedModel,
+          systemInstruction,
+          history,
+          userMessage: typeof textPart === 'string' ? textPart : prompt,
+        });
+        result = { text: textOut };
+        // Lưu history đơn giản
+        try {
+          const nh = [
+            ...(history || []).slice(-18),
+            { role: 'user', content: prompt },
+            { role: 'assistant', content: textOut },
+          ];
+          updateSessionHistory(sessionKey, nh, selectedModel);
+        } catch (_) {}
+      } else {
+        result = await chat.sendMessage({ message: messagePayload });
+      }
+    } catch (apiErr) {
+      console.error('❌ Lỗi khi gọi AI API:', apiErr);
+      userSessions.delete(sessionKey);
+
+      // Quota Gemini — chỉ khi đang gọi Gemini (không áp cho GPT/Claude/Grok/DeepSeek)
+      if (!externalProvider) {
+        const quotaInfo = parseGeminiQuotaError(apiErr, selectedModel);
+        if (quotaInfo.isQuota) {
+          if (!usingTicketKey) {
+            const lock = await lockGeminiQuota({
+              retryAfterSec: quotaInfo.retryAfterSec,
+              isDailyQuota: quotaInfo.isDailyQuota,
+              model: quotaInfo.model || selectedModel,
+              reason: 'gemini_429',
+            });
+            return message.reply(lock.message || getGeminiLockStatus().message).catch(() => {});
+          }
+          return message
+            .reply(
+              `⏳ **Key Gemini trong ticket đã hết quota (free tier).**\n` +
+                `> Model: \`${selectedModel}\`\n` +
+                `• Đổi model Gemini (flash-lite / 3.5…)\n` +
+                `• Hoặc \`key gemini: AIza...\` project khác\n` +
+                `• Hoặc Billing / đợi reset trên AI Studio.`
+            )
+            .catch(() => {});
+        }
+      } else {
+        // Quota / billing provider khác
+        const st = String(apiErr?.status || apiErr?.code || '');
+        const msg = String(apiErr?.message || '');
+        if (st.includes('429') || /quota|rate limit|insufficient|billing|credit|balance/i.test(msg)) {
+          const label = PROVIDER_META[externalProvider]?.label || externalProvider;
+          return message
+            .reply(
+              `⏳ **${label}** — hết hạn mức / cần thanh toán (hoặc rate limit).\n` +
+                `> Model: \`${selectedModel}\`\n` +
+                `> Chi tiết: ${msg.slice(0, 200)}\n` +
+                `• Kiểm tra billing trên dashboard ${label}\n` +
+                `• Hoặc đổi model / dán key khác: \`key ${externalProvider}: ...\``
+            )
+            .catch(() => {});
+        }
+      }
+
+      const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
+      const keySource = usingTicketKey ? 'Key riêng của Ticket này' : 'Key mặc định của Bot';
+      const apiLabel = externalProvider
+        ? (PROVIDER_META[externalProvider]?.label || externalProvider)
+        : 'Gemini';
+
+            const detailMsg =
+        friendly ||
+        (
+          `⚠️ **AI (${apiLabel}) tạm không trả lời được**\n` +
+          `Thử lại sau vài giây hoặc \`/reset\`.\n` +
+          `_(Mã: \`${status}\` · Model: \`${selectedModel}\`)_`
+        );
+
+return message.reply(detailMsg.slice(0, 1900));
+    }
+
+    let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
+    replyText = sanitizeDiscordMath(replyText);
+    replyText = stripMediaUrls(replyText);
+    // Nếu model chỉ trả URL gif, giữ câu ngắn
+    if (!replyText) replyText = 'Đây nhé!';
+
+    // API OK → bỏ khóa Gemini nếu còn (ví dụ vừa sang ngày mới / đổi key)
+    clearGeminiLock().catch(() => {});
+
+    // Trừ hạn mức chat sau khi API thành công
+    consumeQuota(message.author.id, 'chat');
+    const quotaWarn = maybeWarn(message.author.id, 'chat');
+
+    // Lưu lại lịch sử hội thoại xuống đĩa (debounced, tối đa 20 tin gần nhất,
+    // tự động hết hạn sau 7 ngày không hoạt động - xem SessionManager.js).
+    try {
+      if (typeof chat.getHistory === 'function') {
+        const currentHistory = chat.getHistory();
+        updateSessionHistory(sessionKey, currentHistory, selectedModel);
+      } else {
+        console.warn('⚠️ chat.getHistory() không khả dụng trong SDK hiện tại — bỏ qua lưu lịch sử cho session này.');
+      }
+    } catch (histErr) {
+      console.warn('⚠️ Không thể lưu lịch sử session:', histErr);
+    }
+
+    let gifUrl = null;
+    try {
+      const gifReq = parseGifRequest(prompt || message.content || '');
+      gifUrl = await resolveEmotionalGif({
+        userEmotion,
+        replyText,
+        getGifForEmotion,
+        getGifByKeyword,
+        channelId: message.channel.id,
+        forceKeyword: gifReq || null,
+      });
+    } catch (e) {
+      console.warn('❌ Lỗi khi tìm GIF cảm xúc:', e);
+      gifUrl = null;
+    }
+    const askedGif = parseGifRequest(prompt || message.content || '');
+    if (askedGif && !gifUrl) {
+      const noKey = !(process.env.GIPHY_API_KEY || '').trim();
+      replyText +=
+        '\n\n' +
+        (noKey
+          ? '⚠️ Chưa cấu hình **GIPHY_API_KEY** trên host — admin bot cần thêm key tại https://developers.giphy.com'
+          : '⚠️ Không lấy được GIF lúc này (Giphy lỗi / cooldown 30s). Thử lại hoặc `gif: cat` / `gif: funny`.');
+    }
+
+    // TTS / auto-speech (nếu user bật /tts hoặc /auto-speech on)
+    let ttsAttachment = null;
+    if (userPrefs.ttsEnabled) {
+      try {
+        const audioBuf = await synthesizeSpeech(replyText, (getUserPrefs(message.author.id).voiceGender || 'nu'));
+        if (audioBuf) {
+          ttsAttachment = new AttachmentBuilder(audioBuf, { name: 'nexus_reply.mp3' });
+        }
+      } catch (ttsErr) {
+        console.warn('TTS reply error:', ttsErr && ttsErr.message);
+      }
+    }
+
+    // Code dài → file đính kèm (Discord CDN = link tải)
+    const codePack = await extractLongCodeToFiles(replyText, message.channel?.name?.startsWith('ticket') ? 700 : 900);
+    replyText = codePack.text;
+
+    const DISCORD_MAX = 2000;
+    const gifEmbed = gifUrl ? [new EmbedBuilder().setImage(gifUrl).setColor(0x5865f2)] : [];
+    const files = [];
+    if (ttsAttachment) files.push(ttsAttachment);
+    if (codePack.files && codePack.files.length) files.push(...codePack.files);
+
+    // Lưu prompt + nút Regenerate
+    const regenKey = `${message.author.id}_${message.channel.id}`;
+    lastPrompts.set(regenKey, { prompt, userId: message.author.id, at: Date.now() });
+    lastReplies.set(regenKey, { text: replyText, userId: message.author.id, at: Date.now() });
+    const regenRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`nexus_regen:${regenKey}`)
+        .setLabel('Trả lời lại')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔄'),
+      new ButtonBuilder()
+        .setCustomId(`nexus_tr:${regenKey}`)
+        .setLabel('Dịch')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🌐'),
+      new ButtonBuilder()
+        .setCustomId(`nexus_fb:up:${regenKey}`)
+        .setLabel('Tốt')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('👍'),
+      new ButtonBuilder()
+        .setCustomId(`nexus_fb:down:${regenKey}`)
+        .setLabel('Chưa ổn')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('👎')
+    );
+
+    let textOut = replyText;
+    if (quotaWarn) textOut = `${replyText}\n\n${quotaWarn}`;
+
+    const chunks = splitLongMessage(textOut, 1900);
+    let firstSent = null;
+    for (let i = 0; i < chunks.length; i++) {
+      const isFirst = i === 0;
+      const isLast = i === chunks.length - 1;
+      const prefix = chunks.length > 1 ? `**(${i + 1}/${chunks.length})**\n` : '';
+      const payload = {
+        content: (prefix + chunks[i]).slice(0, 2000),
+        embeds: isLast ? gifEmbed : [],
+        files: isLast ? files : [],
+        components: isLast ? [regenRow] : [],
+      };
+      try {
+        if (isFirst) {
+          firstSent = await message.reply(payload);
+        } else {
+          await message.channel.send(payload);
+        }
+      } catch (sendErr) {
+        console.warn('split send', sendErr && sendErr.message);
+        try {
+          if (isFirst) firstSent = await message.reply({ content: payload.content });
+          else await message.channel.send({ content: payload.content });
+        } catch (_) {}
+      }
+    }
+    try {
+      const reactEmoji = EMOTION_REACTIONS[userEmotion];
+      if (reactEmoji && firstSent && typeof firstSent.react === 'function') {
+        await firstSent.react(reactEmoji).catch(() => {});
+      }
+    } catch (_) {}
+    // Phase B — Chat thoại: tin nhắn thoại / voiceChat → đọc câu trả lời trong voice (fallback MP3)
+    try {
+      const prefsVc = getUserPrefs(message.author.id);
+      const userInVoice = !!(message.member && message.member.voice && message.member.voice.channel);
+      const hadVoiceMsg = audioAtts.length > 0;
+      // Bật voicechat HOẶC (gửi tin nhắn thoại + đang trong voice)
+      const shouldSpeak =
+        message.guild &&
+        replyText &&
+        (prefsVc.voiceChat || (hadVoiceMsg && userInVoice) || (hadVoiceMsg && prefsVc.ttsEnabled));
+      if (shouldSpeak) {
+        const speakText = String(replyText)
+          .replace(/https?:\/\/\S+/g, '')
+          .replace(/[*_`#|>]/g, '')
+          .slice(0, 500);
+        if (speakText.length > 2) {
+          // Ưu tiên join kênh voice của user nếu bot chưa vào
+          try {
+            if (userInVoice && typeof joinVoiceChannel === 'function') {
+              const { getVoiceConnection } = (() => {
+                try {
+                  return require('@discordjs/voice');
+                } catch {
+                  return {};
+                }
+              })();
+              const existing =
+                typeof getVoiceConnection === 'function'
+                  ? getVoiceConnection(message.guild.id)
+                  : null;
+              if (!existing) {
+                await joinVoiceChannel(message.member.voice.channel).catch(() => null);
+              }
+            }
+          } catch (_) {}
+
+          const r = await speakInGuild(message.guild.id, speakText, {
+            userVoiceChannel: message.member?.voice?.channel || null,
+            gender: getUserPrefs(message.author.id).voiceGender || 'nu',
+          });
+          if (r && r.fallback && r.mp3Buffer) {
+            await message.channel
+              .send({
+                content:
+                  (hadVoiceMsg ? '🎙️ ' : '🔊 ') +
+                  (r.message || '*(Voice UDP lỗi trên host — gửi MP3 thay thế)*'),
+                files: [new AttachmentBuilder(r.mp3Buffer, { name: 'nexus_voice.mp3' })],
+              })
+              .catch(() => {});
+          } else if (r && r.ok && hadVoiceMsg) {
+            await message.channel
+              .send({ content: '🎙️ Đã nghe thoại → trả lời bằng giọng trong voice.' })
+              .catch(() => {});
+          }
+        }
+      } else if (hadVoiceMsg && message.guild && !userInVoice && !prefsVc.voiceChat) {
+        // Gợi ý 1 lần khi gửi thoại nhưng chưa vào voice
+        await message.channel
+          .send({
+            content:
+              '💡 **Tip chat thoại:** Vào kênh **voice** → `/voicechat mode:on` → gửi tin nhắn thoại lại.\n' +
+              'Hoặc bật `/voicechat mode:on` để bot luôn đọc câu trả lời.',
+          })
+          .catch(() => {});
+      }
+    } catch (vcErr) {
+      console.warn('voicechat speak', vcErr && vcErr.message);
+    }
+
+  } catch (error) {
+    console.error('❌ Lỗi khi xử lý messageCreate:', error);
+    await message
+      .reply('❌ Đã có lỗi khi xử lý. Thử lại, gõ `help`, hoặc `/reset` nếu chat bị lệch.')
+      .catch(() => {});
+  }
+});
+
+// ==========================================
+// KHỞI TẠO BOT & CHỐNG SẬP APP
+// ==========================================
+(async () => {
+  try {
+    const dataDir = DATA_DIR;
+    await fs.mkdir(dataDir, { recursive: true }).catch(() => {});
+
+    await loadAllowedChannelsFromFile().catch((e) => console.error('Lỗi load allowedChannels:', e));
+    await loadAutoClearChannels().catch((e) => console.error('Lỗi load autoClear:', e));
+    await loadTickets().catch((e) => console.error('Lỗi load tickets:', e));
+    await loadSessionsFromFile().catch((e) => console.error('Lỗi load sessions:', e));
+    await loadQuota().catch((e) => console.error('Lỗi load quota:', e));
+    await loadModeration().catch((e) => console.error('Lỗi load moderation:', e));
+    await loadGeminiLock().catch((e) => console.error('Lỗi load geminiLock:', e));
+    await loadUserPrefs().catch((e) => console.error('Lỗi load userPrefs:', e));
+    await loadMemory().catch((e) => console.error('Lỗi load memory:', e));
+    await loadKnowledgeBase().catch((e) => console.error('Lỗi load knowledgeBase:', e));
+
+    if (DISCORD_TOKEN) {
+      await client.login(DISCORD_TOKEN);
+      console.log('🔐 Đã gọi client.login() thành công!');
+    } else {
+      console.error('⚠️ Không thể đăng nhập Discord vì chưa cấu hình DISCORD_TOKEN.');
+    }
+  } catch (err) {
+    console.error('❌ Lỗi khởi động nghiêm trọng:', err);
+  }
+})();
+
+process.on('uncaughtException', (err) => {
+  console.error('❌ Phát hiện lỗi Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Phát hiện Unhandled Rejection tại:', promise, 'Lý do:', reason);
+});
+
+process.on('beforeExit', () => {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
+  saveAllowedChannelsToFile().catch((err) => console.error('❌ Lỗi khi lưu trước khi thoát:', err));
+  flushSessionsNow().catch((err) => console.error('❌ Lỗi khi lưu sessions trước khi thoát:', err));
+});
+
+process.on('SIGINT', async () => {
+  try { await saveAllowedChannelsToFile(); } catch (err) {}
+  try { await flushSessionsNow(); } catch (err) {}
+  process.exit();
+});
+
+process.on('SIGTERM', async () => {
+  try { await saveAllowedChannelsToFile(); } catch (err) {}
+  try { await flushSessionsNow(); } catch (err) {}
+  process.exit();
+});
