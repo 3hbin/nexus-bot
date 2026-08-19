@@ -575,37 +575,108 @@ const PAID_ONLY_MODELS = new Set([
 function formatApiError(apiErr, modelId = null) {
   const status =
     apiErr?.status || apiErr?.code || apiErr?.response?.status || apiErr?.error?.code || 'N/A';
-  const rawMsg =
+  let rawMsg =
     apiErr?.message ||
     apiErr?.error?.message ||
     apiErr?.response?.data?.error?.message ||
-    'Không có thông tin chi tiết.';
+    '';
 
-  let hint = '';
-  let friendly = null;
+  // Bóc message dễ đọc từ JSON Google
+  try {
+    const m = String(rawMsg).match(/"message"\s*:\s*"([^"]+)"/);
+    if (m) rawMsg = m[1];
+  } catch (_) {}
+  rawMsg = String(rawMsg || 'Không rõ chi tiết.')
+    .replace(/\\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+
   const s = String(status);
-  const isQuota = s.includes('429') || /quota|rate limit|limit: 0/i.test(rawMsg);
+  const modelLine = modelId ? '`' + modelId + '`' : 'đang dùng';
+  let title = '⚠️ **AI tạm thời không trả lời được**';
+  let explain = '';
+  let action = '• Thử gửi lại sau vài giây.\n• Hoặc `/reset` rồi chat lại.';
 
-  if (isQuota) {
-    friendly =
-      `💳 **Chức năng này yêu cầu API Key đã bật thanh toán (Billing)!**\n` +
-      `Key hiện tại chưa gắn thẻ thanh toán hoặc đã hết hạn mức sử dụng (Quota: 0).\n\n` +
-      `**Cách khắc phục:**\n` +
-      `• Truy cập https://aistudio.google.com để liên kết thẻ thanh toán (Visa/Mastercard) cho Google Cloud Project.\n` +
-      `• Tạo lại API Key mới sau khi đã bật Billing.`;
-  } else if (s.includes('401') || /API key not valid|api key invalid/i.test(rawMsg)) {
-    hint = '👉 API Key sai hoặc không hợp lệ. Hãy tạo lại Key tại https://aistudio.google.com';
-  } else if (s.includes('403') || /permission|forbidden/i.test(rawMsg)) {
-    hint = '👉 Key không có quyền dùng model này, hoặc chưa bật Gemini API cho project.';
-  } else if (s.includes('404') || /not found|does not exist/i.test(rawMsg)) {
-    hint = '👉 Model không tồn tại hoặc Key không có quyền truy cập model này.';
-  } else if (s.includes('400') || /invalid argument/i.test(rawMsg)) {
-    hint = '👉 Request không hợp lệ: model có thể đã đổi tên/ngừng hỗ trợ, hoặc key/payload sai. Thử model Grok **grok-4.5** / **grok-4.6**. Mã 400 ≠ hết tiền (hết tiền thường 402/403).';
-  } else if (/timeout|ETIMEDOUT|ECONNRESET|fetch failed/i.test(rawMsg)) {
-    hint = '👉 Lỗi mạng/timeout khi gọi Gemini API. Hãy thử lại.';
+  const isQuota =
+    s.includes('429') || /quota|rate limit|limit:\s*0|resource_exhausted/i.test(rawMsg);
+  const isBilling =
+    /billing|payment|credit|insufficient|enable billing/i.test(rawMsg);
+
+  if (isQuota || isBilling) {
+    title = '⏳ **Hết hạn mức (quota) hoặc cần thanh toán**';
+    explain =
+      'Key Gemini đang dùng đã hết lượt free trong ngày, hoặc cần bật Billing.';
+    action =
+      '• Đợi quota reset (thường theo ngày) rồi thử lại.\n' +
+      '• Ticket: dán key khác — `key gemini: AIza...`\n' +
+      '• Admin: kiểm tra https://aistudio.google.com';
+  } else if (s.includes('401') || /api key not valid|invalid.*key|unauthenticated/i.test(rawMsg)) {
+    title = '🔑 **API key không hợp lệ**';
+    explain = 'Key sai, hết hạn, hoặc đã bị thu hồi.';
+    action =
+      '• Admin bot: tạo key mới tại https://aistudio.google.com\n' +
+      '• Ticket/DM: gửi lại `key gemini: AIza...`';
+  } else if (s.includes('403') || /permission|forbidden|not authorized/i.test(rawMsg)) {
+    title = '🚫 **Không có quyền dùng model này**';
+    explain = 'Key chưa bật Gemini API hoặc không được phép gọi model.';
+    action =
+      '• Bật Gemini API trên Google AI Studio / Cloud.\n' +
+      '• Thử model khác hoặc key khác.';
+  } else if (s.includes('404') || /not found|does not exist|not supported/i.test(rawMsg)) {
+    title = '📦 **Model không khả dụng**';
+    explain =
+      'Model ' +
+      modelLine +
+      ' có thể đã đổi tên, ngừng hỗ trợ, hoặc key không truy cập được.';
+    action =
+      '• Đổi model (vd flash) trong ticket.\n• Admin kiểm tra tên model còn đúng không.';
+  } else if (s.includes('400') || /invalid argument|invalid request/i.test(rawMsg)) {
+    title = '❓ **Yêu cầu không hợp lệ**';
+    explain = 'Nội dung gửi lên AI bị lỗi định dạng, hoặc model không nhận request này.';
+    action =
+      '• Thử câu ngắn hơn / bỏ file đính kèm nặng.\n' +
+      '• `/reset` rồi hỏi lại.\n' +
+      '• (Mã 400 ≠ hết tiền; hết tiền thường 429/403.)';
+  } else if (
+    s.includes('500') ||
+    s.includes('503') ||
+    s.includes('504') ||
+    /internal error|unavailable|overloaded|deadline exceeded/i.test(rawMsg)
+  ) {
+    title = '☁️ **Máy chủ AI đang lỗi tạm thời**';
+    explain =
+      'Lỗi phía Google (server Gemini), **không phải** do bạn chat sai hay key bot hỏng.';
+    action =
+      '• Đợi **1–5 phút** rồi nhắn lại.\n' +
+      '• Có thể `/reset` nếu vẫn lỗi.\n' +
+      '• Nếu kéo dài: thử lại sau hoặc báo admin.';
+  } else if (/timeout|ETIMEDOUT|ECONNRESET|fetch failed|network/i.test(rawMsg)) {
+    title = '🌐 **Mất kết nối tới AI**';
+    explain = 'Mạng host bot hoặc Google bị timeout.';
+    action = '• Thử lại sau vài giây.\n• Nếu lặp lại: admin kiểm tra mạng / Railway.';
+  } else {
+    title = '⚠️ **AI không trả lời được lúc này**';
+    explain =
+      rawMsg && rawMsg !== 'Không rõ chi tiết.'
+        ? 'Chi tiết ngắn: ' + rawMsg
+        : 'Lỗi không xác định khi gọi AI.';
+    action = '• Thử lại.\n• `/reset` rồi chat lại.\n• Vẫn lỗi → báo admin kèm giờ xảy ra.';
   }
 
-  return { status, rawMsg, hint, friendly };
+  const friendly =
+    title +
+    '\n' +
+    explain +
+    '\n\n**Bạn có thể:**\n' +
+    action +
+    '\n\n_(Mã kỹ thuật: `' +
+    s +
+    '` · Model: ' +
+    modelLine +
+    ')_';
+
+  return { status: s, rawMsg, hint: action, friendly };
 }
 
 // ==========================================
@@ -744,6 +815,7 @@ const commands = [
           { name: 'Dola', value: 'dola' },
           { name: 'Copilot', value: 'copilot' },
           { name: 'DeepSeek (Mây)', value: 'deepseek' },
+          { name: 'Delta (Roblox Lua)', value: 'delta' },
           { name: 'Tùy chỉnh (kèm mô tả)', value: 'custom' }
         )
     )
@@ -809,6 +881,12 @@ const commands = [
         .setRequired(true)
         .addChoices({ name: 'Bật', value: 'on' }, { name: 'Tắt', value: 'off' })
     ),
+  new SlashCommandBuilder()
+    .setName('join')
+    .setDescription('Bot joins your current voice channel'),
+  new SlashCommandBuilder()
+    .setName('leave')
+    .setDescription('Bot leaves the voice channel'),
 
   new SlashCommandBuilder()
     .setName('summary')
@@ -1889,7 +1967,57 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-if (commandName === 'voicechat') {
+if (commandName === 'join') {
+      if (!interaction.guildId) {
+        return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
+      }
+      const ch = interaction.member?.voice?.channel;
+      if (!ch) {
+        return interaction.reply({
+          content: '❌ Vào **voice channel** trước, rồi `/join`.',
+          ephemeral: true,
+        });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const r = await joinVoiceChannel(ch);
+        if (r && r.ok) {
+          setUserVoiceChat(interaction.user.id, true);
+          return interaction.editReply(
+            `🎙️ Đã **join** **${ch.name}**.
+` +
+              `• Chat thoại: **ON** (bot sẽ cố đọc câu trả lời trong voice)\n` +
+              `• Gửi tin nhắn thoại hoặc text trong ticket/kênh AI\n` +
+              `• Rời: \`/leave\` · Tắt đọc: \`/voicechat mode:off\`\n` +
+              `• Giọng: \`giọng: nam\` / \`giọng: nữ\``
+          );
+        }
+        return interaction.editReply(
+          '⚠️ ' + (r && r.message ? r.message : 'Không join được voice.') +
+            '\nVẫn có thể dùng `/speak` để nhận MP3.'
+        );
+      } catch (e) {
+        console.warn('join cmd', e && e.message);
+        return interaction.editReply('❌ ' + (e.message || String(e)));
+      }
+    }
+
+    if (commandName === 'leave') {
+      if (!interaction.guildId) {
+        return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
+      }
+      try {
+        leaveVoice(interaction.guildId);
+      } catch (e) {
+        console.warn('leave cmd', e && e.message);
+      }
+      return interaction.reply({
+        content: '👋 Bot đã **leave** voice channel.',
+        ephemeral: true,
+      });
+    }
+
+    if (commandName === 'voicechat') {
       const mode = interaction.options.getString('mode');
       const on = mode === 'on';
       setUserVoiceChat(interaction.user.id, on);
@@ -2110,6 +2238,25 @@ client.on('messageCreate', async (message) => {
   // Bật/tắt chat thoại bằng tin nhắn
   {
     const raw = message.content.replace(/<@!?\d+>/g, '').trim();
+    if (/^(?:!)?join$/i.test(raw)) {
+      const ch = message.member?.voice?.channel;
+      if (!ch) return message.reply('❌ Vào voice trước, rồi `!join` hoặc `/join`.').catch(() => {});
+      try {
+        const r = await joinVoiceChannel(ch);
+        if (r && r.ok) {
+          setUserVoiceChat(message.author.id, true);
+          return message.reply(`🎙️ Đã join **${ch.name}**. Rời: \`/leave\` hoặc \`!leave\``).catch(() => {});
+        }
+        return message.reply('⚠️ ' + (r && r.message ? r.message : 'Không join được.')).catch(() => {});
+      } catch (e) {
+        return message.reply('❌ ' + (e.message || e)).catch(() => {});
+      }
+    }
+    if (/^(?:!)?leave$/i.test(raw)) {
+      if (!message.guild) return;
+      try { leaveVoice(message.guild.id); } catch (_) {}
+      return message.reply('👋 Đã leave voice.').catch(() => {});
+    }
     if (/^(?:!)?voicechat\s+on$/i.test(raw)) {
       setUserVoiceChat(message.author.id, true);
       return message
@@ -3086,16 +3233,15 @@ client.on('messageCreate', async (message) => {
         ? (PROVIDER_META[externalProvider]?.label || externalProvider)
         : 'Gemini';
 
-      const detailMsg = friendly
-        ? friendly
-        : `❌ **Lỗi liên lạc ${apiLabel} API**\n` +
-          `> Model: \`${selectedModel}\`\n` +
-          `> Nguồn Key: ${keySource}\n` +
-          `> Mã lỗi: \`${status}\`\n` +
-          `> Chi tiết: ${rawMsg}\n` +
-          (hint ? `\n${hint}` : '');
+            const detailMsg =
+        friendly ||
+        (
+          `⚠️ **AI (${apiLabel}) tạm không trả lời được**\n` +
+          `Thử lại sau vài giây hoặc \`/reset\`.\n` +
+          `_(Mã: \`${status}\` · Model: \`${selectedModel}\`)_`
+        );
 
-      return message.reply(detailMsg.slice(0, 1900));
+return message.reply(detailMsg.slice(0, 1900));
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
