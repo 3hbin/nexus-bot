@@ -2,17 +2,15 @@
 
 [🇻🇳 Tiếng Việt](README.md) · [🇬🇧 English](README.en.md)
 
-Bot Discord AI (**Node.js** + **discord.js v14**) — chat kênh AI / ticket / DM / mention.
+Nexus AI là một bot Discord thông minh viết bằng Node.js (discord.js v14) giúp bạn tạo kênh AI, ticket, DM và phản hồi khi được mention. Bot hỗ trợ nhiều nhà cung cấp mô hình (Gemini, ChatGPT/OpenAI, Claude, Grok, DeepSeek), persona, TTS/voicechat, Knowledge Base / Training, GIF, quota quản lý, moderation và Prompt Shield.
 
-Hỗ trợ **Gemini · ChatGPT · Claude · Grok · DeepSeek**, persona, Training/KB, TTS, voicechat, đa ngôn ngữ, GIF, quota, moderation, Prompt Shield.
-
-> **Bảo mật:** Không commit `.env`. Token & API key chỉ đặt trên host (Railway, VPS…).
+> Bảo mật: Không commit file `.env` vào repository. Token và API key chỉ cấu hình trong environment trên host (Railway, VPS, ...).
 
 ---
 
 ## Video hướng dẫn
 
-https://github.com/user-attachments/assets/25d34b15-2b1f-4f6b-ab8a-4c400310f6ca
+Có video hướng dẫn triển khai và thao tác cơ bản (đính kèm trên trang repo).
 
 ---
 
@@ -21,31 +19,31 @@ https://github.com/user-attachments/assets/25d34b15-2b1f-4f6b-ab8a-4c400310f6ca
 [![Download ZIP](https://img.shields.io/badge/Download-ZIP-blue?style=for-the-badge&logo=github)](https://github.com/3hbin/nexus-bot/archive/refs/heads/main.zip)
 
 | Cách | Link |
-|------|------|
-| **ZIP** | https://github.com/3hbin/nexus-bot/archive/refs/heads/main.zip |
-| **Repo** | https://github.com/3hbin/nexus-bot |
-| **Clone** | `git clone https://github.com/3hbin/nexus-bot.git` |
+|------:|------|
+| ZIP | https://github.com/3hbin/nexus-bot/archive/refs/heads/main.zip |
+| Repo | https://github.com/3hbin/nexus-bot |
+| Clone | `git clone https://github.com/3hbin/nexus-bot.git` |
 
 ---
 
-## Tính năng
+## Tính năng chính
 
-| Nhóm | Chi tiết |
-|------|----------|
-| **Chat AI** | Kênh AI, ticket, mention, DM |
-| **Đa provider** | Gemini · ChatGPT · Claude · Grok · DeepSeek |
-| **Ngôn ngữ AI** | `/languages` · `lang: en` — AI trả lời đúng tiếng đã chọn |
-| **Ticket** | 1 user = 1 vé · key/model · persona |
-| **Persona** | Trẻ trâu 🐃 · toxic 💀 · nhẹ 🍀 · ngầu 😎 · phân tích 📚 |
-| **TTS / Voicechat** | `/voicechat` · `giọng: nam/nữ` |
-| **KB / Memory** | `train:` · `kb add:` · `remember:` |
-| **GIF · Dịch · Quota · Prompt Shield** | |
+- Chat AI: kênh AI, ticket (1 user = 1 ticket), DM, mention bot
+- Hỗ trợ đa provider: Gemini · ChatGPT/OpenAI · Claude · Grok · DeepSeek
+- Ngôn ngữ trả lời: chọn cho từng người dùng / kênh / ticket
+- Persona: bộ persona sẵn có + tuỳ chỉnh
+- TTS / Voicechat: đọc câu trả lời trong voice hoặc đính kèm MP3
+- KB / Memory: lệnh `kb`, `train:`, `remember:` để dạy bot
+- Media: tạo ảnh / video (Gemini Veo / image models), GIF tích hợp
+- Quota & Moderation: giới hạn sử dụng, lọc nội dung, Prompt Shield
 
-Gõ **`help`** hoặc **`/help`**.
+Gõ `help` hoặc `/help` để xem hướng dẫn chi tiết trong bot.
 
 ---
 
 ## Ngôn ngữ AI trả lời
+
+Bạn có thể đặt ngôn ngữ cho AI bằng lệnh `/languages` hoặc gửi nhanh trong chat:
 
 ```text
 /languages language: 🇻🇳 Tiếng Việt
@@ -56,80 +54,87 @@ lang: ko
 lang: auto
 ```
 
+Bảng mã ngôn ngữ hỗ trợ:
+
 | Mã | Ngôn ngữ |
 |----|----------|
 | `vi` | Tiếng Việt |
 | `en` | English |
-| `ko` | 한국어 |
-| `ja` | 日本語 |
-| `zh` | 中文 |
-| `th` `fr` `es` `de` `ru` `id` | … |
-| `auto` | Theo ngôn ngữ app Discord (không dùng IP) |
+| `ko` | 한국어 (Korean) |
+| `ja` | 日本語 (Japanese) |
+| `zh` | 中文 (Chinese) |
+| `th`, `fr`, `es`, `de`, `ru`, `id` | … |
+| `auto` | Tự động theo locale Discord (không dùng IP) |
 
-AI **viết luôn** bằng tiếng đã chọn trong ticket / kênh / DM.  
-Chỉ dịch 1 đoạn: `/dich` hoặc `dịch: ...`.
-
----
-
-## Setup nhanh
-
-1. [discord.com/developers](https://discord.com/developers/applications) → tạo app → bật **Message Content Intent** → copy token  
-2. Tải ZIP / clone repo → đẩy lên **GitHub Private** của bạn  
-3. [railway.app](https://railway.app) → Deploy từ GitHub  
-4. **Shared Variables:**
-
-| Biến | Bắt buộc | Nguồn |
-|------|----------|--------|
-| `DISCORD_TOKEN` | ✅ | Bot → Reset Token |
-| `GEMINI_API_KEY` | ✅ | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| `GIPHY_API_KEY` | Khuyên | [developers.giphy.com](https://developers.giphy.com) |
-| `ADMIN_USER_IDS` | Khuyên | Copy User ID (Developer Mode) |
-| `ADMIN_LOG_CHANNEL_ID` | Tuỳ | ID kênh `#logs` |
-| `ONLINE_ANNOUNCE_CHANNEL_ID` | Tuỳ | Kênh báo online |
-| `DATA_DIR` | Tuỳ | `/data` nếu có Volume |
-
-5. Deploy → gõ `help` trong server  
+AI trả lời trực tiếp bằng ngôn ngữ đã chọn (áp dụng cho ticket / kênh / DM). Nếu chỉ cần dịch 1 đoạn, dùng: `/dich` hoặc `dịch: ...`.
 
 ---
 
-## Lệnh chính
+## Thiết lập nhanh (Quick setup)
+
+1. Tạo Discord App: https://discord.com/developers → New Application → bật **Message Content Intent** → lấy Bot Token.
+2. Clone hoặc tải mã nguồn và đẩy vào GitHub private repository của bạn (nên giữ repo riêng để chứa API keys khi deploy).
+3. Deploy: Ví dụ deploy lên Railway (kết nối GitHub và deploy branch `main`).
+4. Thiết lập environment variables (shared / host):
+
+| Biến | Bắt buộc | Mô tả |
+|------|:--------:|-------|
+| `DISCORD_TOKEN` | ✅ | Token bot Discord (Developer Portal) |
+| `GEMINI_API_KEY` | ✅ (nếu dùng Gemini) | Key Gemini / Google AI Studio (https://aistudio.google.com/apikey) |
+| `OPENAI_API_KEY` | Tuỳ (nếu dùng ChatGPT/OpenAI) | Key OpenAI (sk-...)
+| `ANTHROPIC_API_KEY` | Tuỳ (nếu dùng Claude) | Key Anthropic |
+| `XAI_API_KEY` | Tuỳ (nếu dùng Grok) | Key xAI |
+| `DEEPSEEK_API_KEY` | Tuỳ (nếu dùng DeepSeek) | Key DeepSeek |
+| `GIPHY_API_KEY` | Recommended | Cho GIF (https://developers.giphy.com) |
+| `ADMIN_USER_IDS` | Recommended | Danh sách user id (comma-separated) |
+| `ADMIN_LOG_CHANNEL_ID` | Optional | Channel ID để bot gửi log admin |
+| `ONLINE_ANNOUNCE_CHANNEL_ID` | Optional | Channel ID để bot gửi thông báo online |
+| `DATA_DIR` | Optional | Thư mục lưu data bền (ví dụ `/data` khi mount Volume) |
+
+5. Start: `npm install` → `npm start`, hoặc dùng process manager / container trong host.
+
+Sau khi chạy, gõ `help` hoặc `/help` trong server để kiểm tra.
+
+---
+
+## Lệnh chính (cơ bản)
 
 | Lệnh | Mô tả |
-|------|--------|
-| `/help` | Trợ giúp |
+|------|-------|
+| `/help` | Xem hướng dẫn lệnh & tính năng |
 | `/languages` | Chọn ngôn ngữ AI |
-| `/setchannel` | Đặt kênh AI |
-| `/voicechat` | Chat thoại |
-| `/dich` | Dịch đoạn văn |
-| `/speak` `/tts` | Đọc text |
-| `/ainame` | Đặt tên AI |
-| `/adminpanel` | Admin |
+| `/setchannel` | Thiết lập kênh AI mặc định (admin) |
+| `/voicechat` | Bật/tắt trả lời bằng voice |
+| `/dich` | Dịch văn bản |
+| `/speak`, `/tts` | Tạo file âm thanh từ text |
+| `/ainame` | Đặt tên AI hiển thị |
+| `/adminpanel` | Bảng điều khiển admin |
 
-**Chat nhanh:** `lang: en` · `giọng: nữ` · `key gemini: ...` · `gif: ...` · `help`
+Ngoài ra còn nhiều lệnh liên quan ticket, kb, quota, moderation, media (xem README chi tiết hoặc gõ `help`).
 
 ---
 
-## Voicechat
+## Voicechat (hiện dùng)
 
 ```text
-1. Vào voice
-2. /voicechat mode:on
-3. Nhắn text hoặc tin nhắn thoại
-4. giọng: nam | giọng: nữ
+1. Vào voice channel trên Discord
+2. Chạy: /voicechat mode:on
+3. Gửi text hoặc tin nhắn thoại trong kênh AI / ticket
+4. Chọn giọng: giọng: nam  hoặc  giọng: nữ
 ```
 
 ---
 
-## Lỗi thường gặp
+## Lỗi thường gặp & cách khắc phục
 
 | Lỗi | Xử lý |
-|-----|--------|
-| `Used disallowed intents` | Bật Message Content Intent → Redeploy |
-| Slash không hiện | Đợi 1–2 phút / mời lại bot |
-| Voice chỉ MP3 | Bình thường trên host free |
-| Mất data khi redeploy | Volume + `DATA_DIR=/data` |
+|-----|-------|
+| `Used disallowed intents` | Bật Message Content Intent trong Developer Portal → Redeploy bot |
+| Slash commands không hiện | Đợi 1–2 phút hoặc mời lại bot vào server |
+| Voice chỉ gửi MP3 | Thường do host miễn phí giới hạn UDP — vẫn ok dưới dạng MP3 |
+| Mất data khi redeploy | Mount Volume và đặt `DATA_DIR=/data` để giữ sessions & tickets |
 
 ---
 
-**Chúc bạn deploy thành công.**  
-[🇬🇧 English version](README.en.md)
+Cảm ơn bạn — chúc deploy thành công!
+
