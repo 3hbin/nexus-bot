@@ -2,8 +2,9 @@
 // Giới hạn số lần gọi API theo user / ngày (chat, imagine, video)
 const fs = require('fs').promises;
 const path = require('path');
+const { dataFile } = require('./paths.js');
 
-const QUOTA_FILE = path.join(__dirname, 'data', 'quota.json');
+const QUOTA_FILE = dataFile('quota.json');
 
 /** Giới hạn mặc định — có thể override bằng env */
 const LIMITS = {
@@ -158,7 +159,7 @@ function getQuotaStatusText(userId) {
 // ==========================================
 // KHÓA CHAT KHI GEMINI 429 / HẾT QUOTA
 // ==========================================
-const GEMINI_LOCK_FILE = path.join(__dirname, 'data', 'geminiLock.json');
+const GEMINI_LOCK_FILE = dataFile('geminiLock.json');
 
 /** @type {{ until: number, reason: string, model: string|null, lockedAt: number }|null} */
 let geminiLock = null;
