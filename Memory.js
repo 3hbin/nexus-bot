@@ -1,14 +1,15 @@
 // Memory.js — ghi nhớ lâu dài theo user (remember / forget)
 const fs = require('fs').promises;
-const path = require('path');
+const { dataFile } = require('./paths.js');
 
-const MEMORY_FILE = path.join(__dirname, 'data', 'userMemory.json');
+const MEMORY_FILE = dataFile('userMemory.json');
 /** @type {Map<string, string[]>} */
 const memories = new Map();
 let saveTimer = null;
 
 async function ensureDir() {
   try {
+    const path = require('path');
     await fs.mkdir(path.dirname(MEMORY_FILE), { recursive: true });
   } catch (_) {}
 }
