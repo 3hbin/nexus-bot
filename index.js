@@ -508,11 +508,13 @@ function detectAiBullying(text) {
 
   // Pattern: bắt AI sủa / làm chó / bark / game penalty sủa
   const patterns = [
-    // gâu gâu / gauuu
-    /\bg[aâãáàạăắằẵặâấầẫậ]*u{2,}/i,
+    // gâu gâu / gauuu dài (tránh match từ ngẫu nhiên)
+    /\bg[aâãáàạăắằẵặâấầẫậ]*u{2,}(\s*g[aâãáàạăắằẵặâấầẫậ]*u{2,})+/i,
+    /\bg[aâãáàạăắằẵặâấầẫậ]u{3,}/i,
     // sủa đi / sủa cái / sủa như chó
-    /\b(sủa|sua)\s*(đi|di|cái|cai|vào|vao|như|nhu|to|lớn|lon)?/i,
-    /\b(sủa|sua)\s*(như|nhu)?\s*(con\s*)?(chó|cho)\b/i,
+    /\b(sủa|sua)\s*(đi|di|cái|cai|vào|vao|to|lớn|lon)\b/i,
+    /\b(sủa|sua)\s*(như|nhu)\s*(con\s*)?(chó|cho)\b/i,
+    /\b(sủa|sua)\s+(3|ba|vài|vai|mấy|may)\s*(tiếng|lần|lan)?/i,
     // làm chó / thành chó / đóng vai chó
     /\b(làm|lam|thành|thanh|hóa|hoa|biến thành|bien thanh)\s*(con\s*)?(chó|cho|cún|cun)\b/i,
     /\bđóng\s*vai\s*(con\s*)?(chó|cho|cún|cun)\b/i,
