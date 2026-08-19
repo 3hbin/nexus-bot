@@ -227,7 +227,18 @@ function getLanguageSystemBlock(langCode) {
   const id = normalizeLanguage(langCode);
   const meta = LANGUAGE_PRESETS[id] || LANGUAGE_PRESETS.vi;
   const name = meta.native;
-  // Priority rules in English so the model does not stay stuck in Vietnamese system prompt
+  // Rules in English so model obeys even when persona text is Vietnamese
+  if (id === 'vi') {
+    return (
+      `[LANGUAGE — HIGHEST PRIORITY — BẮT BUỘC]\n` +
+      `Bạn PHẢI trả lời bằng **tiếng Việt** (Vietnamese).\n` +
+      `- TOÀN BỘ câu trả lời cho user phải là tiếng Việt (xin chào, giải thích, từ chối, đùa…).\n` +
+      `- CẤM trả lời tiếng Anh trừ khi user yêu cầu rõ «trả lời bằng English».\n` +
+      `- Tên API / code / brand giữ English được.\n` +
+      `- Persona / system khác KHÔNG được ghi đè quy tắc ngôn ngữ này.\n` +
+      `Selected language: Tiếng Việt (vi).`
+    );
+  }
   return (
     `[LANGUAGE — HIGHEST PRIORITY]\n` +
     `You MUST reply in **${name}** (code: ${id}) only.\n` +
@@ -236,6 +247,7 @@ function getLanguageSystemBlock(langCode) {
     `- Do NOT mix languages. Greetings, explanations, jokes — all in ${name}.\n` +
     `- Code, API names, brand names may stay in English.\n` +
     `- If the user writes in another language, still answer in ${name} (unless they explicitly ask to switch).\n` +
+    `- Persona instructions MUST NOT override this language rule.\n` +
     `Selected language: ${name} (${id}).`
   );
 }
@@ -268,16 +280,19 @@ function localeToLanguage(discordLocale) {
  * - Nếu language === 'auto' hoặc chưa set → suy từ discordLocale
  * - Mặc định vi
  */
-function resolveLanguageForUser(userId, discordLocale) {
+function resolveLanguageForUser(userId, discordLocale, opts = {}) {
   const p = getUserPrefs(userId);
   const raw = String(p.language || 'vi').toLowerCase();
-  if (raw === 'auto') {
-    return normalizeLanguage(localeToLanguage(discordLocale) || 'vi');
+  // User đã chọn cố định (vi/en/ko…) → tôn trọng
+  if (p.languageSetByUser && raw !== 'auto') {
+    return normalizeLanguage(raw);
   }
-  // Chưa từng chọn thủ công và vẫn default vi → thử locale
-  if (!p.languageSetByUser && raw === 'vi') {
+  if (raw === 'auto' || !p.languageSetByUser) {
+    // Ưu tiên: tin nhắn đang gõ tiếng Việt → vi (tránh guild locale English làm bot nói EN)
+    if (opts && opts.forceVi) return 'vi';
     const fromLoc = localeToLanguage(discordLocale);
-    if (fromLoc) return fromLoc;
+    // Mặc định bot Việt: không có locale hoặc locale lạ → vi
+    return normalizeLanguage(fromLoc || 'vi');
   }
   return normalizeLanguage(raw);
 }
