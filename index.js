@@ -547,10 +547,10 @@ function detectAiBullying(text) {
   return null;
 }
 
-const DEFAULT_MODEL = 'gemini-3.6-flash';
+const DEFAULT_MODEL = 'gemini-3.7-flash';
 
-const IMAGE_MODEL_NAME = 'gemini-2.5-flash-image';
-const VIDEO_MODEL_NAME = 'veo-3.1-generate-preview';
+const IMAGE_MODEL_NAME = 'gemini-3.1-flash-image';
+const VIDEO_MODEL_NAME = 'veo-3.1-generate-001';
 
 // ==========================================
 // DISCORD CLIENT
@@ -638,7 +638,7 @@ const PAID_ONLY_MODELS = new Set([
   'gemini-3.1-pro-preview',
   'gemini-3.1-pro',
   'gemini-3.1-flash-image',
-  'gemini-2.5-flash-image',
+  'veo-3.1-generate-001',
   'veo-3.1-generate-preview',
 ]);
 
@@ -2903,7 +2903,7 @@ client.on('messageCreate', async (message) => {
             // Đổi model mặc định cho provider nếu model hiện tại lệch nhà
             if (providerFromModel(selectedModel) !== p) {
               const defaults = {
-                gemini: 'gemini-3.6-flash',
+                gemini: 'gemini-3.7-flash',
                 chatgpt: 'gpt-5-mini',
                 claude: 'claude-sonnet-5-20250514',
                 grok: 'grok-4.6',
