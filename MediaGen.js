@@ -9,8 +9,8 @@ const DEFAULT_IMAGE_COOLDOWN_MS = 1000 * 15; // 15s
 const DEFAULT_VIDEO_COOLDOWN_MS = 1000 * 60 * 3; // 3 minutes
 
 // Model IDs
-const IMAGE_MODEL = 'gemini-2.5-flash-image';
-const VIDEO_MODEL = 'veo-3.1-generate-preview';
+const IMAGE_MODEL = 'gemini-3.1-flash-image';
+const VIDEO_MODEL = 'veo-3.1-generate-001';
 
 const VIDEO_POLL_INTERVAL_MS = 10000; // 10s giữa mỗi lần poll
 const VIDEO_MAX_WAIT_MS = 1000 * 60 * 8; // timeout an toàn 8 phút
