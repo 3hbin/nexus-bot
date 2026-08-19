@@ -149,7 +149,13 @@ const {
   joinVoiceChannel,
   leaveVoice,
   speakInGuild,
+  getVoiceConnectionFor,
 } = require('./VoiceManager.js');
+const {
+  startListening,
+  stopListening,
+  isListening,
+} = require('./VoiceListener.js');
 
 /** Lưu prompt gần nhất để nút Regenerate — key: userId_channelId */
 const lastPrompts = new Map();
@@ -200,6 +206,15 @@ function buildHelpEmbed() {
           'Admin: `/adminpanel` · `/moderation`\n' +
           'Nút: Trả lời lại · Dịch · 👍/👎\n' +
           'Gõ `help` hoặc `!help` cũng xem được hướng dẫn này',
+      },
+      {
+        name: '🎙️ Voice',
+        value:
+          '`/join` · `/leave` — vào/rời voice\n' +
+          '`/voicechat mode:on|off` — bot đọc to câu trả lời\n' +
+          '`/listen mode:on|off` — **chat thoại 2 chiều** (bot nghe bạn nói & trả lời bằng giọng)\n' +
+          '`/speak` · `/tts` · `giọng: nam/nữ`\n' +
+          '⚠️ Host free: UDP 2 chiều thường không ổn định',
       },
       {
         name: '📎 Ảnh',
@@ -887,6 +902,20 @@ const commands = [
   new SlashCommandBuilder()
     .setName('leave')
     .setDescription('Bot leaves the voice channel'),
+  new SlashCommandBuilder()
+    .setName('listen')
+    .setDescription('Chat thoại 2 chiều — bot nghe & trả lời bằng giọng trong voice')
+    .setDescriptionLocalizations({
+      'en-US': 'Bidirectional voice chat — bot listens and replies by voice',
+      vi: 'Chat thoại 2 chiều — bot nghe & trả lời bằng giọng',
+    })
+    .addStringOption((opt) =>
+      opt
+        .setName('mode')
+        .setDescription('on = bật nghe, off = tắt')
+        .setRequired(true)
+        .addChoices({ name: 'Bật (on)', value: 'on' }, { name: 'Tắt (off)', value: 'off' })
+    ),
 
   new SlashCommandBuilder()
     .setName('summary')
@@ -2007,14 +2036,113 @@ if (commandName === 'join') {
         return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
       }
       try {
+        stopListening(interaction.guildId);
+      } catch (e) {
+        console.warn('stopListening on leave', e && e.message);
+      }
+      try {
         leaveVoice(interaction.guildId);
       } catch (e) {
         console.warn('leave cmd', e && e.message);
       }
       return interaction.reply({
-        content: '👋 Bot đã **leave** voice channel.',
+        content: '👋 Bot đã **leave** voice channel (đã tắt nghe nếu đang bật).',
         ephemeral: true,
       });
+    }
+
+    if (commandName === 'listen') {
+      if (!interaction.guildId) {
+        return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
+      }
+      const mode = interaction.options.getString('mode');
+      const on = mode === 'on';
+
+      if (!on) {
+        const r = stopListening(interaction.guildId);
+        return interaction.reply({
+          content: r.message || '🔇 Đã tắt nghe thoại 2 chiều.',
+          ephemeral: true,
+        });
+      }
+
+      // mode:on
+      const ch = interaction.member?.voice?.channel;
+      if (!ch) {
+        return interaction.reply({
+          content:
+            '❌ Bạn cần **vào kênh voice** trước, rồi chạy `/listen mode:on`.\n' +
+            'Bot sẽ tự join và bắt đầu nghe.',
+          ephemeral: true,
+        });
+      }
+
+      if (!aiInstance) {
+        return interaction.reply({
+          content:
+            '❌ Bot chưa cấu hình **GEMINI_API_KEY** — không thể nhận diện giọng nói.\n' +
+            'Admin cần thêm key trên host (Render/Railway…).',
+          ephemeral: true,
+        });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        // Join nếu chưa có connection
+        let joinNote = '';
+        const existing = getVoiceConnectionFor(interaction.guildId);
+        if (!existing) {
+          const jr = await joinVoiceChannel(ch);
+          if (!jr || !jr.ok) {
+            return interaction.editReply(
+              '⚠️ Không join được voice: ' +
+                (jr && jr.message ? jr.message : 'lỗi không rõ') +
+                '\nThử `/join` rồi `/listen mode:on` lại.\n' +
+                '_(Host free thường gặp lỗi UDP)_'
+            );
+          }
+          joinNote = jr.partial
+            ? '\n⚠️ Voice chưa Ready hoàn toàn (host/UDP) — nghe có thể không ổn.'
+            : '\n✅ Bot đã vào voice cùng bạn.';
+        }
+
+        const prefs = getUserPrefs(interaction.user.id);
+        const gender = prefs.voiceGender || 'nu';
+        const langBlock = getLanguageSystemBlock(
+          resolveLanguageForUser(interaction.user.id, interaction.locale)
+        );
+        const systemInstruction =
+          'Bạn đang trong cuộc gọi thoại Discord với người dùng. ' +
+          'Nghe audio, hiểu nội dung, trả lời NGẮN GỌN (1–3 câu), tự nhiên như đang nói chuyện. ' +
+          'Không markdown, không list dài, không code trừ khi bị hỏi rõ. ' +
+          'Thêm emoji nhẹ nếu phù hợp.\n' +
+          langBlock;
+
+        const r = startListening(interaction.guildId, {
+          client,
+          ai: aiInstance,
+          model: DEFAULT_MODEL,
+          systemInstruction,
+          textChannel: interaction.channel,
+          gender,
+        });
+
+        if (!r.ok) {
+          return interaction.editReply('⚠️ ' + (r.message || 'Không bật được nghe.'));
+        }
+
+        return interaction.editReply(
+          (r.message || '🎙️ Đã bật nghe.') + joinNote +
+            '\n• Giọng trả lời: `' +
+            (gender === 'nam' || gender === 'male' ? 'nam' : 'nữ') +
+            '` (`/voice-gender` để đổi)\n' +
+            '• Tắt: `/listen mode:off` hoặc `/leave`'
+        );
+      } catch (e) {
+        console.warn('listen cmd', e && e.message);
+        return interaction.editReply('❌ ' + (e.message || String(e)).slice(0, 200));
+      }
     }
 
     if (commandName === 'voicechat') {
@@ -2254,8 +2382,9 @@ client.on('messageCreate', async (message) => {
     }
     if (/^(?:!)?leave$/i.test(raw)) {
       if (!message.guild) return;
+      try { stopListening(message.guild.id); } catch (_) {}
       try { leaveVoice(message.guild.id); } catch (_) {}
-      return message.reply('👋 Đã leave voice.').catch(() => {});
+      return message.reply('👋 Đã leave voice (đã tắt nghe nếu đang bật).').catch(() => {});
     }
     if (/^(?:!)?voicechat\s+on$/i.test(raw)) {
       setUserVoiceChat(message.author.id, true);
