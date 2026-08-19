@@ -591,18 +591,32 @@ function resolveThinkingLevel(ticketData) {
 }
 
 function buildGeminiChatConfig(extra = {}) {
+  // API Gemini 3.x: thinkingLevel phải là 'low' | 'medium' | 'high' (chữ thường)
+  const lvRaw = String(extra.thinkingLevel || GEMINI_THINKING_LEVEL || 'MEDIUM').toUpperCase();
+  const lvMap = { LOW: 'low', MEDIUM: 'medium', HIGH: 'high', L: 'low', M: 'medium', H: 'high' };
+  const thinkingLevel = lvMap[lvRaw] || 'medium';
   const cfg = {
     maxOutputTokens: extra.maxOutputTokens ?? 8192,
     temperature: extra.temperature ?? 0.7,
-    // SDK @google/genai: thinkingConfig.thinkingLevel
-    thinkingConfig: {
-      thinkingLevel: extra.thinkingLevel || GEMINI_THINKING_LEVEL,
-    },
+    thinkingConfig: { thinkingLevel },
   };
   if (extra.systemInstruction) cfg.systemInstruction = extra.systemInstruction;
-  // Cho phép tắt thinking (model/summary ngắn)
   if (extra.thinking === false) delete cfg.thinkingConfig;
   return cfg;
+}
+
+/** Fallback khi model chính 503/unavailable */
+const GEMINI_FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'];
+
+function isTransientGeminiError(err) {
+  const s = String(err?.status || err?.code || err?.response?.status || '');
+  const msg = String(err?.message || err?.error?.message || err || '');
+  return (
+    s.includes('503') ||
+    s.includes('500') ||
+    s.includes('504') ||
+    /unavailable|overloaded|internal error|deadline exceeded|high demand/i.test(msg)
+  );
 }
 
 
@@ -3355,7 +3369,45 @@ client.on('messageCreate', async (message) => {
           updateSessionHistory(sessionKey, nh, selectedModel);
         } catch (_) {}
       } else {
-        result = await chat.sendMessage({ message: messagePayload });
+        try {
+          result = await chat.sendMessage({ message: messagePayload });
+        } catch (firstErr) {
+          // 503 / overloaded → thử fallback model 1 lần (key + session mới)
+          if (
+            !externalProvider &&
+            activeAi &&
+            isTransientGeminiError(firstErr) &&
+            selectedModel === DEFAULT_MODEL
+          ) {
+            let lastErr = firstErr;
+            for (const fb of GEMINI_FALLBACK_MODELS) {
+              try {
+                console.warn(`[Gemini] ${selectedModel} lỗi tạm → thử fallback ${fb}`);
+                userSessions.delete(sessionKey);
+                const fbSession = activeAi.chats.create({
+                  model: fb,
+                  history: getSavedHistory(sessionKey) || [],
+                  config: buildGeminiChatConfig({
+                    systemInstruction,
+                    maxOutputTokens: 8192,
+                    thinkingLevel: resolveThinkingLevel(typeof ticketData !== 'undefined' ? ticketData : null),
+                  }),
+                });
+                userSessions.set(sessionKey, fbSession);
+                result = await fbSession.sendMessage({ message: messagePayload });
+                selectedModel = fb;
+                lastErr = null;
+                break;
+              } catch (e2) {
+                lastErr = e2;
+                userSessions.delete(sessionKey);
+              }
+            }
+            if (lastErr) throw lastErr;
+          } else {
+            throw firstErr;
+          }
+        }
       }
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi AI API:', apiErr);
