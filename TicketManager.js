@@ -275,6 +275,47 @@ async function setTicketPersona(channelId, personaId, customText = null, allowTo
   }
 }
 
+
+const THINKING_LEVELS = {
+  LOW: { id: 'LOW', label: 'Thinking LOW', description: 'Siêu nhanh, ít suy nghĩ' },
+  MEDIUM: { id: 'MEDIUM', label: 'Thinking MEDIUM', description: 'Cân bằng (mặc định)' },
+  HIGH: { id: 'HIGH', label: 'Thinking HIGH', description: 'Suy nghĩ sâu, chậm hơn' },
+};
+
+async function setTicketThinkingLevel(channelId, level) {
+  try {
+    const key = String(channelId);
+    const existing = tickets.get(key) || {
+      channelId: key,
+      userApiKey: null,
+      selectedModel: null,
+      selectedPersona: DEFAULT_PERSONA_ID,
+      customPersonaText: null,
+    };
+    const lv = String(level || 'MEDIUM').toUpperCase();
+    existing.thinkingLevel = THINKING_LEVELS[lv] ? lv : 'MEDIUM';
+    tickets.set(key, existing);
+    await saveTickets();
+    return existing.thinkingLevel;
+  } catch (err) {
+    console.error('TicketManager: setTicketThinkingLevel error:', err);
+    return null;
+  }
+}
+
+function buildThinkingSelectMenu() {
+  const options = Object.values(THINKING_LEVELS).map((t) =>
+    new StringSelectMenuOptionBuilder()
+      .setLabel(t.label.slice(0, 100))
+      .setDescription((t.description || t.id).slice(0, 100))
+      .setValue(t.id)
+  );
+  return new StringSelectMenuBuilder()
+    .setCustomId('select_thinking')
+    .setPlaceholder('Chọn Thinking Level (Gemini)…')
+    .addOptions(options);
+}
+
 function buildPersonaSelectMenu() {
   // Discord select tối đa 25 option
   const options = Object.values(PERSONA_PRESETS).map((p) => {
@@ -429,6 +470,7 @@ async function handleTicketInteraction(interaction) {
         selectedModel: 'gemini-3.7-flash',
         selectedPersona: DEFAULT_PERSONA_ID,
         customPersonaText: null,
+        thinkingLevel: 'MEDIUM',
       });
       await saveTickets();
 
@@ -445,17 +487,19 @@ async function handleTicketInteraction(interaction) {
         );
 
       const selectPersona = buildPersonaSelectMenu();
+      const selectThinking = buildThinkingSelectMenu();
 
       const row1 = new ActionRowBuilder().addComponents(selectModel);
-      const row2 = new ActionRowBuilder().addComponents(selectPersona);
-      const row3 = new ActionRowBuilder().addComponents(
+      const row2 = new ActionRowBuilder().addComponents(selectThinking);
+      const row3 = new ActionRowBuilder().addComponents(selectPersona);
+      const row4 = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('input_api_key_gemini').setLabel('Key Gemini').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('input_api_key_chatgpt').setLabel('Key ChatGPT').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('input_api_key_claude').setLabel('Key Claude').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('input_api_key_grok').setLabel('Key Grok').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('input_api_key_deepseek').setLabel('Key DeepSeek').setStyle(ButtonStyle.Secondary)
       );
-      const row4 = new ActionRowBuilder().addComponents(
+      const row5 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('nexus_clear_memory')
           .setLabel('Xóa memory')
@@ -469,9 +513,10 @@ async function handleTicketInteraction(interaction) {
         .setDescription(
           '**Bắt đầu nhanh**\n' +
             '1. Chọn **Model** (Gemini / ChatGPT / Claude / Grok / DeepSeek)\n' +
-            '2. Nhấn nút **Key …** tương ứng **hoặc** nhắn:\n' +
+            '2. Chọn **Thinking Level** (LOW nhanh · MEDIUM cân bằng · HIGH sâu — chỉ Gemini)\n' +
+            '3. Nhấn nút **Key …** tương ứng **hoặc** nhắn:\n' +
             '`key gemini: …` · `key chatgpt: …` · `key claude: …` · `key grok: …` · `key deepseek: …`\n' +
-            '3. Chọn **Tính cách AI** → nhắn bình thường\n' +
+            '4. Chọn **Tính cách AI** → nhắn bình thường\n' +
             'Gõ `keys` để xem đã lưu key provider nào.\n\n' +
             '**Lệnh & mẹo**\n' +
             '• `note: ...` — ghim ngữ cảnh\n' +
@@ -489,7 +534,7 @@ async function handleTicketInteraction(interaction) {
         .setColor(0x57f287)
         .setFooter({ text: 'Nexus AI Ticket • Đóng ticket = xóa kênh + dữ liệu' });
 
-      await created.send({ embeds: [welcomeEmbed], components: [row1, row2, row3, row4] }).catch(() => {});
+      await created.send({ embeds: [welcomeEmbed], components: [row1, row2, row3, row4, row5] }).catch(() => {});
 
       await interaction
         .reply({ content: `✅ Đã tạo kênh Ticket thành công tại: <#${created.id}>`, ephemeral: true })
@@ -515,6 +560,32 @@ async function handleTicketInteraction(interaction) {
       await interaction.reply({
         content: `🤖 Model **\`${selectedModel}\`** · provider **${ticketInfo.activeProvider}** cho ticket này.
 Nhớ nhập key đúng nhà cung cấp (nút Key… hoặc \`key ${ticketInfo.activeProvider}: ...\`).`,
+        ephemeral: true,
+      });
+      return true;
+    }
+
+
+    // 2a. XỬ LÝ CHỌN THINKING LEVEL
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_thinking') {
+      const selected = String(interaction.values[0] || 'MEDIUM').toUpperCase();
+      const ticketInfo = getTicketByChannel(interaction.channelId);
+      if (!ticketInfo) {
+        await interaction.reply({ content: '❌ Kênh này không phải là Ticket hợp lệ.', ephemeral: true });
+        return true;
+      }
+      const level = await setTicketThinkingLevel(interaction.channelId, selected);
+      const tips = {
+        LOW: 'Siêu nhanh — ít suy nghĩ, hợp chat ngắn.',
+        MEDIUM: 'Cân bằng — mặc định tốt cho hầu hết câu hỏi.',
+        HIGH: 'Suy nghĩ sâu — chậm hơn, hợp bài khó / code phức tạp.',
+      };
+      await interaction.reply({
+        content:
+          `🧠 **Thinking Level: \`${level}\`**\n` +
+          (tips[level] || '') +
+          '\n_(Chỉ áp dụng model **Gemini**. ChatGPT/Claude/Grok/DeepSeek bỏ qua.)_\n' +
+          'Nhắn tin mới để áp dụng (session cũ có thể `/reset` hoặc nút Xóa memory).',
         ephemeral: true,
       });
       return true;
@@ -825,6 +896,8 @@ module.exports = {
   setTicketApiKey,
   getTicketProviderKey,
   setTicketPersona,
+  setTicketThinkingLevel,
+  THINKING_LEVELS,
   setTicketNote,
   setTicketAiName,
 };
