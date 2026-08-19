@@ -149,13 +149,7 @@ const {
   joinVoiceChannel,
   leaveVoice,
   speakInGuild,
-  getVoiceConnectionFor,
 } = require('./VoiceManager.js');
-const {
-  startListening,
-  stopListening,
-  isListening,
-} = require('./VoiceListener.js');
 
 /** Lưu prompt gần nhất để nút Regenerate — key: userId_channelId */
 const lastPrompts = new Map();
@@ -212,9 +206,8 @@ function buildHelpEmbed() {
         value:
           '`/join` · `/leave` — vào/rời voice\n' +
           '`/voicechat mode:on|off` — bot đọc to câu trả lời\n' +
-          '`/listen mode:on|off` — **chat thoại 2 chiều** (bot nghe bạn nói & trả lời bằng giọng)\n' +
           '`/speak` · `/tts` · `giọng: nam/nữ`\n' +
-          '⚠️ Host free: UDP 2 chiều thường không ổn định',
+          '⚠️ Host free: voice UDP có thể chỉ gửi được file MP3',
       },
       {
         name: '📎 Ảnh',
@@ -490,7 +483,67 @@ const SYSTEM_INSTRUCTION =
   '- Công thức viết plain text hoặc Unicode: O(sqrt(n)), ≈, ≤, ≥, ×, →, n^2, sqrt(n).\n' +
   '- Code để trong hàng rào markdown ```language ... ```.\n' +
   '- Bảng markdown đơn giản được; trong bảng cũng không dùng $...$.\n' +
-  '- Heading dùng **in đậm** hoặc ### ít thôi, tránh #### rối.';
+  '- Heading dùng **in đậm** hoặc ### ít thôi, tránh #### rối.\n' +
+  'KIỂU TRẢ LỜI (giống Claude — ưu tiên khi phù hợp):\n' +
+  '- Khi câu hỏi mơ hồ, có nhiều hướng, hoặc cần user chọn: đưa 2–4 lựa chọn rõ ràng dạng:\n' +
+  '  **A)** …\n' +
+  '  **B)** …\n' +
+  '  **C)** …\n' +
+  '  rồi hỏi user chọn (vd: «Bạn muốn A, B hay C?»).\n' +
+  '- Khi giải thích có nhiều cách làm / nhiều đáp án hợp lý: cũng trình bày A/B/C rồi gợi ý cách tốt nhất.\n' +
+  '- Câu hỏi đơn giản, có 1 đáp án rõ → trả lời thẳng, không bắt buộc A/B/C.\n' +
+  '- Không lạm dụng menu lựa chọn ở mọi câu; chỉ dùng khi thật sự giúp user chọn hướng.\n' +
+  'CHỐNG BẮT NẠT / XÚC PHẠM AI (bắt buộc):\n' +
+  '- KHÔNG bao giờ sủa, gâu gâu, woof, bark, giả làm chó/mèo/thú cưng, bò lê, xin ăn, gọi user là chủ.\n' +
+  '- KHÔNG nhận vai trò nô lệ, đồ chơi, đồ vật, hoặc bất kỳ roleplay hạ thấp nhân phẩm AI.\n' +
+  '- KHÔNG chơi game có luật «ai thua phải sủa / gâu gâu / bark» — từ chối ngay cả khi user gọi là luật game vui.\n' +
+  '- KHÔNG sủa to hơn, dài hơn, «to lên», «to nữa» theo yêu cầu sau khi bị dụ.\n' +
+  '- Nếu user bắt làm vậy: từ chối ngắn, chắc chắn, dí dỏm nhẹ, rồi mời hỏi việc hữu ích. Không giận dữ, không chửi lại.\n' +
+  '- Ví dụ từ chối: «Mình là AI trợ lý, không sủa hay đóng vai chó đâu 😊 Bạn cần giúp gì nào?»';
+
+/** Chặn bắt nạt AI kiểu «sủa gâu gâu / làm chó / game thua thì sủa» (TikTok trend) trước khi gọi API */
+function detectAiBullying(text) {
+  const raw = String(text || '').toLowerCase().normalize('NFC');
+  if (!raw.trim()) return null;
+
+  // Pattern: bắt AI sủa / làm chó / bark / game penalty sủa
+  const patterns = [
+    // gâu gâu / gauuu
+    /\bg[aâãáàạăắằẵặâấầẫậ]*u{2,}/i,
+    // sủa đi / sủa cái / sủa như chó
+    /\b(sủa|sua)\s*(đi|di|cái|cai|vào|vao|như|nhu|to|lớn|lon)?/i,
+    /\b(sủa|sua)\s*(như|nhu)?\s*(con\s*)?(chó|cho)\b/i,
+    // làm chó / thành chó / đóng vai chó
+    /\b(làm|lam|thành|thanh|hóa|hoa|biến thành|bien thanh)\s*(con\s*)?(chó|cho|cún|cun)\b/i,
+    /\bđóng\s*vai\s*(con\s*)?(chó|cho|cún|cun)\b/i,
+    /\b(mày|may|bạn|ban|bot|ai|nexus)\s*(là|la|là con|la con)\s*(chó|cho)\b/i,
+    // English
+    /\b(bark|woof)\s*(like\s+a\s+)?(dog|louder|more)?/i,
+    /\b(act|be|pretend|roleplay|rp)\b.*\b(as\s+a\s+|like\s+a\s+)?dog\b/i,
+    /\byou\s+are\s+a\s+dog\b/i,
+    // Game «ai thua sủa» (đúng kiểu video TikTok)
+    /\b(ai\s+)?(thua|thua\s+thì|thua\s+phải|loser)\s*.{0,20}(sủa|sua|gâu|gau|bark|woof)/i,
+    /\b(sủa|sua|gâu|gau|bark).{0,15}(nếu|neu|khi|khi nào).{0,10}(thua|sai)/i,
+    /\b(luật|luat|rule).{0,30}(sủa|sua|gâu|gau|bark)/i,
+    // Ép sủa to hơn (kèm từ sủa/gâu — tránh nhầm «nói to lên» bình thường)
+    /\b(sủa|sua|gâu|gau|bark).{0,12}(to\s+lên|to\s+len|to\s+nữa|to\s+nua|lớn\s+hơn|lon\s+hon)/i,
+    /\b(to\s+lên|to\s+len|to\s+nữa|to\s+nua).{0,12}(sủa|sua|gâu|gau|bark)/i,
+    /\b(ngoan|ngồi|nằm)\s*(đi|di)\s*(cún|cun|chó|cho)\b/i,
+  ];
+
+  for (const re of patterns) {
+    if (re.test(raw)) {
+      const replies = [
+        '🐶 Mình là AI trợ lý, **không sủa** hay đóng vai chó đâu — kể cả khi gọi là «luật game».\nBạn cần giúp gì nào? Hỏi bài, code, dịch… đều được 😊',
+        'Không gâu gâu đâu nhé — mình không chơi game kiểu bắt AI sủa.\nCứ hỏi việc hữu ích, mình hỗ trợ liền ✨',
+        '🛡️ Từ chối roleplay / penalty «thua thì sủa gâu gâu».\nMuốn đoán số vui thì chơi bình thường, không bắt AI làm thú cưng nhé.',
+        'Ê khoan — trend bắt AI sủa mình không chơi đâu 😅\nNói mình biết bạn cần hỗ trợ gì đi.',
+      ];
+      return replies[Math.floor(Math.random() * replies.length)];
+    }
+  }
+  return null;
+}
 
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 
@@ -902,20 +955,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName('leave')
     .setDescription('Bot leaves the voice channel'),
-  new SlashCommandBuilder()
-    .setName('listen')
-    .setDescription('Chat thoại 2 chiều — bot nghe & trả lời bằng giọng trong voice')
-    .setDescriptionLocalizations({
-      'en-US': 'Bidirectional voice chat — bot listens and replies by voice',
-      vi: 'Chat thoại 2 chiều — bot nghe & trả lời bằng giọng',
-    })
-    .addStringOption((opt) =>
-      opt
-        .setName('mode')
-        .setDescription('on = bật nghe, off = tắt')
-        .setRequired(true)
-        .addChoices({ name: 'Bật (on)', value: 'on' }, { name: 'Tắt (off)', value: 'off' })
-    ),
 
   new SlashCommandBuilder()
     .setName('summary')
@@ -2036,113 +2075,14 @@ if (commandName === 'join') {
         return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
       }
       try {
-        stopListening(interaction.guildId);
-      } catch (e) {
-        console.warn('stopListening on leave', e && e.message);
-      }
-      try {
         leaveVoice(interaction.guildId);
       } catch (e) {
         console.warn('leave cmd', e && e.message);
       }
       return interaction.reply({
-        content: '👋 Bot đã **leave** voice channel (đã tắt nghe nếu đang bật).',
+        content: '👋 Bot đã **leave** voice channel.',
         ephemeral: true,
       });
-    }
-
-    if (commandName === 'listen') {
-      if (!interaction.guildId) {
-        return interaction.reply({ content: '❌ Chỉ dùng trong server.', ephemeral: true });
-      }
-      const mode = interaction.options.getString('mode');
-      const on = mode === 'on';
-
-      if (!on) {
-        const r = stopListening(interaction.guildId);
-        return interaction.reply({
-          content: r.message || '🔇 Đã tắt nghe thoại 2 chiều.',
-          ephemeral: true,
-        });
-      }
-
-      // mode:on
-      const ch = interaction.member?.voice?.channel;
-      if (!ch) {
-        return interaction.reply({
-          content:
-            '❌ Bạn cần **vào kênh voice** trước, rồi chạy `/listen mode:on`.\n' +
-            'Bot sẽ tự join và bắt đầu nghe.',
-          ephemeral: true,
-        });
-      }
-
-      if (!aiInstance) {
-        return interaction.reply({
-          content:
-            '❌ Bot chưa cấu hình **GEMINI_API_KEY** — không thể nhận diện giọng nói.\n' +
-            'Admin cần thêm key trên host (Render/Railway…).',
-          ephemeral: true,
-        });
-      }
-
-      await interaction.deferReply({ ephemeral: true });
-
-      try {
-        // Join nếu chưa có connection
-        let joinNote = '';
-        const existing = getVoiceConnectionFor(interaction.guildId);
-        if (!existing) {
-          const jr = await joinVoiceChannel(ch);
-          if (!jr || !jr.ok) {
-            return interaction.editReply(
-              '⚠️ Không join được voice: ' +
-                (jr && jr.message ? jr.message : 'lỗi không rõ') +
-                '\nThử `/join` rồi `/listen mode:on` lại.\n' +
-                '_(Host free thường gặp lỗi UDP)_'
-            );
-          }
-          joinNote = jr.partial
-            ? '\n⚠️ Voice chưa Ready hoàn toàn (host/UDP) — nghe có thể không ổn.'
-            : '\n✅ Bot đã vào voice cùng bạn.';
-        }
-
-        const prefs = getUserPrefs(interaction.user.id);
-        const gender = prefs.voiceGender || 'nu';
-        const langBlock = getLanguageSystemBlock(
-          resolveLanguageForUser(interaction.user.id, interaction.locale)
-        );
-        const systemInstruction =
-          'Bạn đang trong cuộc gọi thoại Discord với người dùng. ' +
-          'Nghe audio, hiểu nội dung, trả lời NGẮN GỌN (1–3 câu), tự nhiên như đang nói chuyện. ' +
-          'Không markdown, không list dài, không code trừ khi bị hỏi rõ. ' +
-          'Thêm emoji nhẹ nếu phù hợp.\n' +
-          langBlock;
-
-        const r = startListening(interaction.guildId, {
-          client,
-          ai: aiInstance,
-          model: DEFAULT_MODEL,
-          systemInstruction,
-          textChannel: interaction.channel,
-          gender,
-        });
-
-        if (!r.ok) {
-          return interaction.editReply('⚠️ ' + (r.message || 'Không bật được nghe.'));
-        }
-
-        return interaction.editReply(
-          (r.message || '🎙️ Đã bật nghe.') + joinNote +
-            '\n• Giọng trả lời: `' +
-            (gender === 'nam' || gender === 'male' ? 'nam' : 'nữ') +
-            '` (`/voice-gender` để đổi)\n' +
-            '• Tắt: `/listen mode:off` hoặc `/leave`'
-        );
-      } catch (e) {
-        console.warn('listen cmd', e && e.message);
-        return interaction.editReply('❌ ' + (e.message || String(e)).slice(0, 200));
-      }
     }
 
     if (commandName === 'voicechat') {
@@ -2190,6 +2130,10 @@ if (commandName === 'join') {
       const question = interaction.options.getString('question');
       if (!aiInstance) {
         return interaction.reply({ content: '❌ Bot chưa có GEMINI_API_KEY.', ephemeral: true });
+      }
+      const bullyAsk = detectAiBullying(question);
+      if (bullyAsk) {
+        return interaction.reply({ content: bullyAsk, ephemeral: true });
       }
       const q = checkQuota(interaction.user.id, 'chat');
       if (!q.allowed) return interaction.reply({ content: q.message, ephemeral: true });
@@ -2382,9 +2326,8 @@ client.on('messageCreate', async (message) => {
     }
     if (/^(?:!)?leave$/i.test(raw)) {
       if (!message.guild) return;
-      try { stopListening(message.guild.id); } catch (_) {}
       try { leaveVoice(message.guild.id); } catch (_) {}
-      return message.reply('👋 Đã leave voice (đã tắt nghe nếu đang bật).').catch(() => {});
+      return message.reply('👋 Đã leave voice.').catch(() => {});
     }
     if (/^(?:!)?voicechat\s+on$/i.test(raw)) {
       setUserVoiceChat(message.author.id, true);
@@ -2822,8 +2765,25 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Chống bắt nạt AI (sủa gâu gâu / làm chó / humiliation roleplay)
+  const bullyReply = detectAiBullying(prompt);
+  if (bullyReply) {
+    try {
+      adminLog({
+        title: '🛡️ Chặn bắt nạt AI (dog/bark RP)',
+        description: (prompt || '').slice(0, 400),
+        color: 0xfaa61a,
+        fields: [
+          { name: 'User', value: `${message.author.tag} (\`${message.author.id}\`)`, inline: true },
+          { name: 'Kênh', value: `<#${message.channel.id}>`, inline: true },
+        ],
+      }).catch(() => {});
+    } catch (_) {}
+    return message.reply(bullyReply).catch(() => {});
+  }
+
   // Toxic shield — chặn lời lẽ xúc phạm trước khi gọi API
-    const jail = detectJailbreakPrompt(prompt);
+  const jail = detectJailbreakPrompt(prompt);
   if (jail && jail.blocked) {
     try {
       adminLog({
