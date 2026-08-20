@@ -604,11 +604,12 @@ function buildGeminiChatConfig(extra = {}) {
   if (extra.systemInstruction) cfg.systemInstruction = extra.systemInstruction;
   if (extra.thinking === false) delete cfg.thinkingConfig;
 
-  // Built-in tools — bật mặc định (tắt từng cái bằng env)
-  // GEMINI_GOOGLE_SEARCH=0     → tắt Search
-  // GEMINI_GOOGLE_MAPS=0       → tắt Maps
-  // GEMINI_CODE_EXECUTION=0    → tắt chạy Python sandbox
-  // GEMINI_FILE_SEARCH_STORE=id → bật File Search (RAG); không set = tắt
+  // Built-in tools
+  // Google KHÔNG cho gộp grounding tools (Search + Maps + File Search) trong 1 request.
+  // Mặc định an toàn: chỉ Google Search + Code Execution.
+  // Maps: GEMINI_GOOGLE_MAPS=1
+  // File Search: cần GEMINI_FILE_SEARCH_STORE + GEMINI_FILE_SEARCH=1
+  // Tắt Search: GEMINI_GOOGLE_SEARCH=0 | tắt Code: GEMINI_CODE_EXECUTION=0
   const tools = [];
   const flagOn = (envName, defaultOn = true) => {
     const v = String(process.env[envName] ?? (defaultOn ? '1' : '0')).trim().toLowerCase();
@@ -617,44 +618,51 @@ function buildGeminiChatConfig(extra = {}) {
   const enableSearch =
     extra.googleSearch === true ||
     (extra.googleSearch !== false && flagOn('GEMINI_GOOGLE_SEARCH', true));
+  // Maps mặc định TẮT — dễ 400 khi gộp với Search
   const enableMaps =
     extra.googleMaps === true ||
-    (extra.googleMaps !== false && flagOn('GEMINI_GOOGLE_MAPS', true));
+    (extra.googleMaps !== false && flagOn('GEMINI_GOOGLE_MAPS', false));
   const enableCode =
     extra.codeExecution === true ||
     (extra.codeExecution !== false && flagOn('GEMINI_CODE_EXECUTION', true));
   const fileStore =
     (extra.fileSearchStore && String(extra.fileSearchStore).trim()) ||
     (process.env.GEMINI_FILE_SEARCH_STORE || process.env.VERTEX_RAG_STORE_ID || '').trim();
+  // File Search mặc định TẮT dù đã có store — bật tường minh: GEMINI_FILE_SEARCH=1
   const enableFileSearch =
     extra.fileSearch === true ||
-    (extra.fileSearch !== false && !!fileStore);
+    (extra.fileSearch !== false && !!fileStore && flagOn('GEMINI_FILE_SEARCH', false));
 
-  // Tắt hết tool khi extra.tools === false (dịch / tóm tắt ngắn)
   if (extra.tools !== false) {
-    // Chuẩn hóa store name: "fileSearchStores/xxx" hoặc chỉ "xxx"
     let storeName = fileStore;
-    if (storeName && !storeName.startsWith('fileSearchStores/')) {
+    if (storeName && !/^fileSearchStores\//i.test(storeName)) {
       storeName = 'fileSearchStores/' + storeName.replace(/^\/+/, '');
     }
 
-    // Google: File Search KHÔNG được gộp với Google Search / URL Context cùng 1 request
-    // → khi bật File Search thì bỏ Search + Maps trong request này
     if (enableFileSearch && storeName) {
-      tools.push({
-        fileSearch: {
-          fileSearchStoreNames: [storeName],
-        },
-      });
+      // Chỉ File Search (+ code). Không Search/Maps.
+      tools.push({ fileSearch: { fileSearchStoreNames: [storeName] } });
+      if (enableCode) tools.push({ codeExecution: {} });
+    } else if (enableMaps && !enableSearch) {
+      // Chỉ Maps (+ code)
+      tools.push({ googleMaps: {} });
       if (enableCode) tools.push({ codeExecution: {} });
     } else {
+      // Mặc định: Search + Code (không Maps)
       if (enableSearch) tools.push({ googleSearch: {} });
-      if (enableMaps) tools.push({ googleMaps: {} });
       if (enableCode) tools.push({ codeExecution: {} });
     }
   }
   if (tools.length) cfg.tools = tools;
   return cfg;
+}
+
+function isToolsConfigError(err) {
+  const msg = String(err?.message || err?.error?.message || err || '');
+  return (
+    /INVALID_ARGUMENT|Unknown name|file_search|fileSearch|google_maps|googleMaps|tools\[/i.test(msg) ||
+    String(err?.status || err?.code || '').includes('400')
+  );
 }
 
 /** Gắn nguồn Google Search (nếu có) vào cuối câu trả lời */
@@ -3458,8 +3466,31 @@ client.on('messageCreate', async (message) => {
         try {
           result = await chat.sendMessage({ message: messagePayload });
         } catch (firstErr) {
+          // 400 do tools sai / conflict → thử lại 1 lần KHÔNG tools
+          if (!externalProvider && activeAi && isToolsConfigError(firstErr)) {
+            try {
+              console.warn('[Gemini] 400 tools → retry without tools');
+              userSessions.delete(sessionKey);
+              const plain = activeAi.chats.create({
+                model: selectedModel,
+                history: getSavedHistory(sessionKey) || [],
+                config: buildGeminiChatConfig({
+                  systemInstruction,
+                  maxOutputTokens: 8192,
+                  thinkingLevel: resolveThinkingLevel(typeof ticketData !== 'undefined' ? ticketData : null),
+                  tools: false,
+                }),
+              });
+              userSessions.set(sessionKey, plain);
+              result = await plain.sendMessage({ message: messagePayload });
+              firstErr = null;
+            } catch (ePlain) {
+              firstErr = ePlain;
+            }
+          }
           // 503 / overloaded → thử fallback model 1 lần (key + session mới)
           if (
+            firstErr &&
             !externalProvider &&
             activeAi &&
             isTransientGeminiError(firstErr) &&
@@ -3490,7 +3521,7 @@ client.on('messageCreate', async (message) => {
               }
             }
             if (lastErr) throw lastErr;
-          } else {
+          } else if (firstErr) {
             throw firstErr;
           }
         }
