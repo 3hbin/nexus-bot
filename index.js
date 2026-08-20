@@ -632,11 +632,25 @@ function buildGeminiChatConfig(extra = {}) {
 
   // Tắt hết tool khi extra.tools === false (dịch / tóm tắt ngắn)
   if (extra.tools !== false) {
-    if (enableSearch) tools.push({ googleSearch: {} });
-    if (enableMaps) tools.push({ googleMaps: {} });
-    if (enableCode) tools.push({ codeExecution: {} });
-    if (enableFileSearch && fileStore) {
-      tools.push({ fileSearch: { fileSearchStores: [fileStore] } });
+    // Chuẩn hóa store name: "fileSearchStores/xxx" hoặc chỉ "xxx"
+    let storeName = fileStore;
+    if (storeName && !storeName.startsWith('fileSearchStores/')) {
+      storeName = 'fileSearchStores/' + storeName.replace(/^\/+/, '');
+    }
+
+    // Google: File Search KHÔNG được gộp với Google Search / URL Context cùng 1 request
+    // → khi bật File Search thì bỏ Search + Maps trong request này
+    if (enableFileSearch && storeName) {
+      tools.push({
+        fileSearch: {
+          fileSearchStoreNames: [storeName],
+        },
+      });
+      if (enableCode) tools.push({ codeExecution: {} });
+    } else {
+      if (enableSearch) tools.push({ googleSearch: {} });
+      if (enableMaps) tools.push({ googleMaps: {} });
+      if (enableCode) tools.push({ codeExecution: {} });
     }
   }
   if (tools.length) cfg.tools = tools;
