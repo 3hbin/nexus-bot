@@ -3545,11 +3545,16 @@ client.on('messageCreate', async (message) => {
           }
           return message
             .reply(
-              `⏳ **Key Gemini trong ticket đã hết quota (free tier).**\n` +
+              `⏳ **Key Gemini trong ticket bị Google từ chối (quota / rate limit).**\n` +
                 `> Model: \`${selectedModel}\`\n` +
-                `• Đổi model Gemini (flash-lite / 3.5…)\n` +
-                `• Hoặc \`key gemini: AIza...\` project khác\n` +
-                `• Hoặc Billing / đợi reset trên AI Studio.`
+                (quotaInfo.rawMsg
+                  ? `> Google: \`${String(quotaInfo.rawMsg).slice(0, 240).replace(/`/g, "'")}\`\n`
+                  : '') +
+                `• Đợi **1–2 phút** rồi thử lại (limit theo phút)\n` +
+                `• Đổi model: gemini-2.5-flash / flash-lite\n` +
+                `• Gõ \`keys\` kiểm tra key đã lưu\n` +
+                `• Tạo key ở **project Google khác** (không chung project cũ)\n` +
+                `• Hoặc Billing / đợi reset ~00:00 UTC+7`
             )
             .catch(() => {});
         }
