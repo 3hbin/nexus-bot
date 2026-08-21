@@ -90,6 +90,7 @@ const {
   getGeminiLockStatus,
   parseGeminiQuotaError,
 } = require('./QuotaManager.js');
+const keyPool = require('./GeminiKeyPool.js');
 const {
   loadUserPrefs,
   getUserPrefs,
@@ -440,6 +441,7 @@ function stripMediaUrls(text) {
 const PORT = process.env.PORT || 3000;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// Pool: GEMINI_API_KEYS=key1,key2,key3 (ưu tiên) hoặc GEMINI_API_KEY đơn
 
 const ALLOWED_CHANNELS_FILE =
   process.env.ALLOWED_CHANNELS_FILE || dataFile('allowedChannels.json');
@@ -450,8 +452,10 @@ const userCooldowns = new Map();
 if (!DISCORD_TOKEN) {
   console.error('❌ Thiếu DISCORD_TOKEN trong Environment Variables trên Render!');
 }
-if (!GEMINI_API_KEY) {
-  console.error('❌ Thiếu GEMINI_API_KEY trong Environment Variables trên Render!');
+if (!keyPool.getCurrentKey()) {
+  console.error('❌ Thiếu GEMINI_API_KEY hoặc GEMINI_API_KEYS trong Environment Variables!');
+} else {
+  console.log(keyPool.getPoolStatus().replace(/\*\*/g, ''));
 }
 
 // ==========================================
@@ -468,7 +472,15 @@ app.listen(PORT, () => {
 // ==========================================
 // GOOGLE GEMINI CONFIG
 // ==========================================
-const aiInstance = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
+/** Client Gemini KEY BOT — lấy từ pool (không dùng cho ticket/DM key user) */
+function getBotAi() {
+  const k = keyPool.getCurrentKey();
+  return k ? new GoogleGenAI({ apiKey: k }) : null;
+}
+function refreshBotAi() {
+  return getBotAi();
+}
+let aiInstance = getBotAi();
 
 function isBotOwner(userId) {
   const raw = process.env.ADMIN_USER_IDS || process.env.OWNER_ID || '';
@@ -3112,10 +3124,13 @@ client.on('messageCreate', async (message) => {
         selectedModel = DEFAULT_MODEL;
         usingTicketKey = true; // coi như key riêng → không dính lock key bot
         externalProvider = null;
-      } else if (aiInstance) {
-        activeAi = aiInstance;
       } else {
-        return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY!');
+        keyPool.resetRotation();
+        aiInstance = refreshBotAi();
+        if (!aiInstance) {
+          return message.reply('❌ Bot chưa được cài đặt GEMINI_API_KEY / GEMINI_API_KEYS!');
+        }
+        activeAi = aiInstance;
       }
     }
 
@@ -3529,34 +3544,81 @@ client.on('messageCreate', async (message) => {
     } catch (apiErr) {
       console.error('❌ Lỗi khi gọi AI API:', apiErr);
       userSessions.delete(sessionKey);
+      let recoveredFromQuota = false;
 
       // Quota Gemini — chỉ khi đang gọi Gemini (không áp cho GPT/Claude/Grok/DeepSeek)
       if (!externalProvider) {
         const quotaInfo = parseGeminiQuotaError(apiErr, selectedModel);
         if (quotaInfo.isQuota) {
           if (!usingTicketKey) {
-            const lock = await lockGeminiQuota({
-              retryAfterSec: quotaInfo.retryAfterSec,
-              isDailyQuota: quotaInfo.isDailyQuota,
-              model: quotaInfo.model || selectedModel,
-              reason: 'gemini_429',
-            });
-            return message.reply(lock.message || getGeminiLockStatus().message).catch(() => {});
+            // Key pool: xoay key bot trước khi khóa toàn bot
+            const nextKey = keyPool.rotateKey();
+            if (nextKey) {
+              try {
+                console.warn('[KeyPool] 429 trên key bot → thử key tiếp theo trong pool');
+                aiInstance = refreshBotAi();
+                activeAi = aiInstance;
+                const retryChat = activeAi.chats.create({
+                  model: selectedModel,
+                  history: getSavedHistory(sessionKey) || [],
+                  config: buildGeminiChatConfig({
+                    systemInstruction,
+                    maxOutputTokens: 8192,
+                    thinkingLevel: resolveThinkingLevel(
+                      typeof ticketData !== 'undefined' ? ticketData : null
+                    ),
+                  }),
+                });
+                userSessions.set(sessionKey, retryChat);
+                result = await retryChat.sendMessage({ message: messagePayload });
+                recoveredFromQuota = true;
+              } catch (retryErr) {
+                console.error('[KeyPool] Key tiếp theo cũng lỗi:', retryErr?.message || retryErr);
+                const qi2 = parseGeminiQuotaError(retryErr, selectedModel);
+                const lock = await lockGeminiQuota({
+                  retryAfterSec: (qi2.retryAfterSec || quotaInfo.retryAfterSec),
+                  isDailyQuota: !!(qi2.isDailyQuota || quotaInfo.isDailyQuota),
+                  model: qi2.model || selectedModel,
+                  reason: 'gemini_429_pool',
+                });
+                return message
+                  .reply(
+                    (lock.message || getGeminiLockStatus().message) +
+                      `\n\n_(Key pool: key sau cũng hết quota / lỗi.)_`
+                  )
+                  .catch(() => {});
+              }
+            } else {
+              const lock = await lockGeminiQuota({
+                retryAfterSec: quotaInfo.retryAfterSec,
+                isDailyQuota: quotaInfo.isDailyQuota,
+                model: quotaInfo.model || selectedModel,
+                reason: 'gemini_429',
+              });
+              const poolNote =
+                keyPool.getPoolSize() > 1
+                  ? `\n\n_(Đã thử hết ${keyPool.getPoolSize()} key trong pool.)_`
+                  : '';
+              return message
+                .reply((lock.message || getGeminiLockStatus().message) + poolNote)
+                .catch(() => {});
+            }
+          } else {
+            return message
+              .reply(
+                `⏳ **Key Gemini trong ticket bị Google từ chối (quota / rate limit).**\n` +
+                  `> Model: \`${selectedModel}\`\n` +
+                  (quotaInfo.rawMsg
+                    ? `> Google: \`${String(quotaInfo.rawMsg).slice(0, 240).replace(/`/g, "'")}\`\n`
+                    : '') +
+                  `• Đợi **1–2 phút** rồi thử lại (limit theo phút)\n` +
+                  `• Đổi model khác trong ticket (3.6 / 3.7 / flash-lite)\n` +
+                  `• Gõ \`keys\` kiểm tra key đã lưu\n` +
+                  `• Tạo key ở **project Google khác** (không chung project cũ)\n` +
+                  `• Hoặc Billing / đợi reset ~00:00 UTC+7`
+              )
+              .catch(() => {});
           }
-          return message
-            .reply(
-              `⏳ **Key Gemini trong ticket bị Google từ chối (quota / rate limit).**\n` +
-                `> Model: \`${selectedModel}\`\n` +
-                (quotaInfo.rawMsg
-                  ? `> Google: \`${String(quotaInfo.rawMsg).slice(0, 240).replace(/`/g, "'")}\`\n`
-                  : '') +
-                `• Đợi **1–2 phút** rồi thử lại (limit theo phút)\n` +
-                `• Đổi model: gemini-2.5-flash / flash-lite\n` +
-                `• Gõ \`keys\` kiểm tra key đã lưu\n` +
-                `• Tạo key ở **project Google khác** (không chung project cũ)\n` +
-                `• Hoặc Billing / đợi reset ~00:00 UTC+7`
-            )
-            .catch(() => {});
         }
       } else {
         // Quota / billing provider khác
@@ -3576,6 +3638,9 @@ client.on('messageCreate', async (message) => {
         }
       }
 
+      if (recoveredFromQuota) {
+        // Đã gửi lại thành công bằng key pool — tiếp tục xử lý result bên dưới
+      } else {
       const { status, rawMsg, hint, friendly } = formatApiError(apiErr, selectedModel);
       const keySource = usingTicketKey ? 'Key riêng của Ticket này' : 'Key mặc định của Bot';
       const apiLabel = externalProvider
@@ -3591,6 +3656,7 @@ client.on('messageCreate', async (message) => {
         );
 
 return message.reply(detailMsg.slice(0, 1900));
+      }
     }
 
     let replyText = result?.text || '🤖 Nexus AI không trả lời được nội dung này.';
