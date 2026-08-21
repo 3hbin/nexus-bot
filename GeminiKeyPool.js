@@ -48,7 +48,11 @@ function getCurrentKey() {
 function rotateKey() {
   if (!keys.length) reloadFromEnv();
   if (keys.length <= 1) {
-    console.warn(`[KeyPool] rotate bỏ qua — chỉ có ${keys.length} key trong pool`);
+    // Không phải bug: env chỉ có 1 key → không thể xoay
+    console.warn(
+      `[KeyPool] Không thể rotate — pool chỉ có ${keys.length} key. ` +
+        `Thêm key: GEMINI_API_KEYS=key1,key2,key3`
+    );
     return null;
   }
 
