@@ -1313,7 +1313,7 @@ const EMOTION_REACTIONS = {
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN || 'none');
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`✅ Bot ${client.user.tag} đã online!`);
   console.log(`📂 DATA_DIR = ${DATA_DIR}`);
   try {
@@ -3551,11 +3551,16 @@ client.on('messageCreate', async (message) => {
         const quotaInfo = parseGeminiQuotaError(apiErr, selectedModel);
         if (quotaInfo.isQuota) {
           if (!usingTicketKey) {
-            // Key pool: xoay key bot trước khi khóa toàn bot
-            const nextKey = keyPool.rotateKey();
-            if (nextKey) {
+            // Key pool: thử lần lượt các key còn lại (không retry vô hạn)
+            let lastQuota = quotaInfo;
+            let poolRecovered = false;
+            while (!poolRecovered) {
+              const nextKey = keyPool.rotateKey();
+              if (!nextKey) break;
               try {
-                console.warn('[KeyPool] 429 trên key bot → thử key tiếp theo trong pool');
+                console.warn(
+                  `[KeyPool] 429 → thử key index ${keyPool.getActiveIndex()} (đã che)`
+                );
                 aiInstance = refreshBotAi();
                 activeAi = aiInstance;
                 const retryChat = activeAi.chats.create({
@@ -3571,34 +3576,39 @@ client.on('messageCreate', async (message) => {
                 });
                 userSessions.set(sessionKey, retryChat);
                 result = await retryChat.sendMessage({ message: messagePayload });
+                poolRecovered = true;
                 recoveredFromQuota = true;
               } catch (retryErr) {
-                console.error('[KeyPool] Key tiếp theo cũng lỗi:', retryErr?.message || retryErr);
                 const qi2 = parseGeminiQuotaError(retryErr, selectedModel);
-                const lock = await lockGeminiQuota({
-                  retryAfterSec: (qi2.retryAfterSec || quotaInfo.retryAfterSec),
-                  isDailyQuota: !!(qi2.isDailyQuota || quotaInfo.isDailyQuota),
-                  model: qi2.model || selectedModel,
-                  reason: 'gemini_429_pool',
-                });
+                if (qi2.isQuota) {
+                  lastQuota = qi2;
+                  console.warn(
+                    `[KeyPool] Key index ${keyPool.getActiveIndex()} cũng 429/quota — tiếp tục xoay nếu còn`
+                  );
+                  continue;
+                }
+                // Lỗi khác (không phải quota) — dừng xoay, báo lỗi thường
+                console.error('[KeyPool] Lỗi không phải quota:', retryErr?.message || retryErr);
+                const { status, rawMsg, friendly } = formatApiError(retryErr, selectedModel);
                 return message
                   .reply(
-                    (lock.message || getGeminiLockStatus().message) +
-                      `\n\n_(Key pool: key sau cũng hết quota / lỗi.)_`
+                    (friendly || `⚠️ AI lỗi tạm (\`${status}\`). Thử lại sau.`).slice(0, 1900)
                   )
                   .catch(() => {});
               }
-            } else {
+            }
+            if (!poolRecovered) {
               const lock = await lockGeminiQuota({
-                retryAfterSec: quotaInfo.retryAfterSec,
-                isDailyQuota: quotaInfo.isDailyQuota,
-                model: quotaInfo.model || selectedModel,
-                reason: 'gemini_429',
+                retryAfterSec: lastQuota.retryAfterSec,
+                isDailyQuota: lastQuota.isDailyQuota,
+                model: lastQuota.model || selectedModel,
+                reason: 'gemini_429_pool',
               });
+              const n = keyPool.getPoolSize();
               const poolNote =
-                keyPool.getPoolSize() > 1
-                  ? `\n\n_(Đã thử hết ${keyPool.getPoolSize()} key trong pool.)_`
-                  : '';
+                n <= 1
+                  ? '\n\n_(Pool chỉ có 1 key — không thể xoay. Thêm GEMINI_API_KEYS=key1,key2…)_'
+                  : `\n\n_(Đã thử hết ${n} key trong pool.)_`;
               return message
                 .reply((lock.message || getGeminiLockStatus().message) + poolNote)
                 .catch(() => {});
