@@ -1094,6 +1094,16 @@ const commands = [
       opt.setName('text').setDescription('Nội dung cần đọc').setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName('voice-gender')
+    .setDescription('Chọn giọng TTS nam/nữ')
+    .addStringOption((opt) =>
+      opt
+        .setName('gender')
+        .setDescription('nam hoặc nữ')
+        .setRequired(true)
+        .addChoices({ name: 'Nam', value: 'nam' }, { name: 'Nữ', value: 'nu' })
+    ),
+  new SlashCommandBuilder()
     .setName('mode')
     .setDescription('Chế độ trả lời: normal (mặc định) hoặc strict (ngắn, ít emoji)')
     .addStringOption((opt) =>
@@ -3144,6 +3154,26 @@ client.on('messageCreate', async (message) => {
     }
 
 
+
+    // Đổi giọng TTS nhanh: giọng: nam | giọng: nữ
+    {
+      const gSrc = (typeof prompt === 'string' ? prompt : (message.content || '')).replace(/<@!?\d+>/g, '').trim();
+      const gMatch = gSrc.match(/^giọng\s*[:：]\s*(nam|nữ|nu|male|female|m|f)\s*$/i)
+        || gSrc.match(/^voice\s*[:：]\s*(nam|nữ|nu|male|female|m|f)\s*$/i)
+        || gSrc.match(/^gender\s*[:：]\s*(nam|nữ|nu|male|female|m|f)\s*$/i);
+      if (gMatch) {
+        const raw = String(gMatch[1]).toLowerCase();
+        const gender = (raw === 'nam' || raw === 'male' || raw === 'm') ? 'nam' : 'nu';
+        setUserVoiceGender(message.author.id, gender);
+        const label = gender === 'nam' ? 'Nam (Nam Minh)' : 'Nữ (Hoài My)';
+        await message.reply(
+          `🎤 **Giọng TTS: ${label}**\n` +
+            `Dùng với \`/speak\`, \`/tts\`, \`/voicechat\` hoặc tin nhắn thoại.\n` +
+            `Đổi lại: \`giọng: nam\` / \`giọng: nữ\``
+        ).catch(() => {});
+        return;
+      }
+    }
 
     // Đổi ngôn ngữ nhanh: lang: en | lang: ko | lang: vi | lang: auto
     {
