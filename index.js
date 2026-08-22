@@ -616,54 +616,49 @@ function buildGeminiChatConfig(extra = {}) {
   if (extra.systemInstruction) cfg.systemInstruction = extra.systemInstruction;
   if (extra.thinking === false) delete cfg.thinkingConfig;
 
-  // Built-in tools
-  // Google KHÔNG cho gộp grounding tools (Search + Maps + File Search) trong 1 request.
-  // Mặc định an toàn: chỉ Google Search + Code Execution.
-  // Maps: GEMINI_GOOGLE_MAPS=1
-  // File Search: cần GEMINI_FILE_SEARCH_STORE + GEMINI_FILE_SEARCH=1
-  // Tắt Search: GEMINI_GOOGLE_SEARCH=0 | tắt Code: GEMINI_CODE_EXECUTION=0
+  // Tools Gemini: MẶC ĐỊNH TẮT hết (tiết kiệm quota free).
+  // Bật lại từng cái bằng env = 1 nếu cần:
+  //   GEMINI_GOOGLE_SEARCH=1
+  //   GEMINI_GOOGLE_MAPS=1
+  //   GEMINI_CODE_EXECUTION=1
+  //   GEMINI_FILE_SEARCH=1 + GEMINI_FILE_SEARCH_STORE=fileSearchStores/...
+  // Không gắn tools → chat thuần, ít tốn quota hơn.
   const tools = [];
-  const flagOn = (envName, defaultOn = true) => {
-    const v = String(process.env[envName] ?? (defaultOn ? '1' : '0')).trim().toLowerCase();
-    return v !== '0' && v !== 'false' && v !== 'off';
+  const flagOn = (envName) => {
+    const v = String(process.env[envName] ?? '0').trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'on';
   };
-  const enableSearch =
-    extra.googleSearch === true ||
-    (extra.googleSearch !== false && flagOn('GEMINI_GOOGLE_SEARCH', true));
-  // Maps mặc định TẮT — dễ 400 khi gộp với Search
-  const enableMaps =
-    extra.googleMaps === true ||
-    (extra.googleMaps !== false && flagOn('GEMINI_GOOGLE_MAPS', false));
-  const enableCode =
-    extra.codeExecution === true ||
-    (extra.codeExecution !== false && flagOn('GEMINI_CODE_EXECUTION', true));
-  const fileStore =
-    (extra.fileSearchStore && String(extra.fileSearchStore).trim()) ||
-    (process.env.GEMINI_FILE_SEARCH_STORE || process.env.VERTEX_RAG_STORE_ID || '').trim();
-  // File Search mặc định TẮT dù đã có store — bật tường minh: GEMINI_FILE_SEARCH=1
-  const enableFileSearch =
-    extra.fileSearch === true ||
-    (extra.fileSearch !== false && !!fileStore && flagOn('GEMINI_FILE_SEARCH', false));
-
   if (extra.tools !== false) {
+    const enableSearch =
+      extra.googleSearch === true ||
+      (extra.googleSearch !== false && flagOn('GEMINI_GOOGLE_SEARCH'));
+    const enableMaps =
+      extra.googleMaps === true ||
+      (extra.googleMaps !== false && flagOn('GEMINI_GOOGLE_MAPS'));
+    const enableCode =
+      extra.codeExecution === true ||
+      (extra.codeExecution !== false && flagOn('GEMINI_CODE_EXECUTION'));
+    const fileStore =
+      (extra.fileSearchStore && String(extra.fileSearchStore).trim()) ||
+      (process.env.GEMINI_FILE_SEARCH_STORE || process.env.VERTEX_RAG_STORE_ID || '').trim();
+    const enableFileSearch =
+      extra.fileSearch === true ||
+      (extra.fileSearch !== false && !!fileStore && flagOn('GEMINI_FILE_SEARCH'));
+
     let storeName = fileStore;
     if (storeName && !/^fileSearchStores\//i.test(storeName)) {
       storeName = 'fileSearchStores/' + storeName.replace(/^\/+/, '');
     }
 
+    // Không gộp nhiều grounding tool trong 1 request
     if (enableFileSearch && storeName) {
-      // Chỉ File Search (+ code). Không Search/Maps.
       tools.push({ fileSearch: { fileSearchStoreNames: [storeName] } });
-      if (enableCode) tools.push({ codeExecution: {} });
-    } else if (enableMaps && !enableSearch) {
-      // Chỉ Maps (+ code)
+    } else if (enableMaps) {
       tools.push({ googleMaps: {} });
-      if (enableCode) tools.push({ codeExecution: {} });
-    } else {
-      // Mặc định: Search + Code (không Maps)
-      if (enableSearch) tools.push({ googleSearch: {} });
-      if (enableCode) tools.push({ codeExecution: {} });
+    } else if (enableSearch) {
+      tools.push({ googleSearch: {} });
     }
+    if (enableCode) tools.push({ codeExecution: {} });
   }
   if (tools.length) cfg.tools = tools;
   return cfg;
