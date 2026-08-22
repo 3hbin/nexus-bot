@@ -15,10 +15,14 @@ const fetch =
         }
       })();
 
-/** Giọng Edge TTS tiếng Việt */
+/**
+ * Giọng Edge TTS tiếng Việt (Azure Neural)
+ * Nam: NamMinh — hạ pitch nhẹ để rõ giọng nam hơn
+ * Nữ: HoaiMy
+ */
 const VOICES = {
-  nu: 'vi-VN-HoaiMyNeural', // nữ
-  nam: 'vi-VN-NamMinhNeural', // nam
+  nu: 'vi-VN-HoaiMyNeural',
+  nam: 'vi-VN-NamMinhNeural',
   female: 'vi-VN-HoaiMyNeural',
   male: 'vi-VN-NamMinhNeural',
 };
@@ -33,9 +37,40 @@ function resolveVoiceId(gender) {
   if (g === 'nam' || g === 'male' || g === 'm' || g === 'boy') return VOICES.nam;
   if (g === 'nu' || g === 'nữ' || g === 'female' || g === 'f' || g === 'girl') return VOICES.nu;
   if (VOICES[g]) return VOICES[g];
-  // full voice id
   if (/^vi-VN-/i.test(g)) return g;
   return VOICES.nu;
+}
+
+function isMaleVoice(voiceId) {
+  return /NamMinh|male|nam/i.test(String(voiceId || ''));
+}
+
+/** Thoát XML cho SSML */
+function escapeXml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Gói text thành SSML — giọng nam: pitch thấp hơn, rate hơi chậm
+ * để nghe rõ nam hơn so với mặc định NamMinh
+ */
+function buildSsml(text, voiceId) {
+  const body = escapeXml(text);
+  const male = isMaleVoice(voiceId);
+  const prosody = male
+    ? 'pitch="-8%" rate="-8%" volume="+5%"'
+    : 'pitch="+0%" rate="+0%"';
+  return (
+    `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="vi-VN">` +
+    `<voice name="${voiceId}">` +
+    `<prosody ${prosody}>${body}</prosody>` +
+    `</voice></speak>`
+  );
 }
 
 function splitText(text, max = MAX_CHARS) {
@@ -63,7 +98,10 @@ function splitText(text, max = MAX_CHARS) {
 
 /** Edge TTS qua msedge-tts / node-edge-tts nếu có */
 async function synthesizeEdge(text, voiceId) {
-  // 1) msedge-tts
+  const ssml = buildSsml(text, voiceId);
+  const plain = String(text || '').trim();
+
+  // 1) msedge-tts — thử SSML trước, fallback plain
   try {
     const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
     const tts = new MsEdgeTTS();
@@ -76,10 +114,19 @@ async function synthesizeEdge(text, voiceId) {
       `nexus_edge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.mp3`
     );
     if (typeof tts.toFile === 'function') {
-      await tts.toFile(outPath, text);
-      const buf = await fs.readFile(outPath);
-      await fs.unlink(outPath).catch(() => {});
-      if (buf && buf.length > 100) return buf;
+      for (const payload of [ssml, plain]) {
+        try {
+          await tts.toFile(outPath, payload);
+          const buf = await fs.readFile(outPath);
+          await fs.unlink(outPath).catch(() => {});
+          if (buf && buf.length > 100) {
+            console.log(`[TTS] Edge OK voice=${voiceId} ssml=${payload === ssml}`);
+            return buf;
+          }
+        } catch (inner) {
+          console.warn('Tts edge toFile:', inner && inner.message);
+        }
+      }
     }
   } catch (e) {
     if (!/Cannot find module/.test(String(e && e.message))) {
@@ -99,11 +146,16 @@ async function synthesizeEdge(text, voiceId) {
       lang: 'vi-VN',
       outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
       timeout: 15000,
+      pitch: isMaleVoice(voiceId) ? '-8%' : '+0%',
+      rate: isMaleVoice(voiceId) ? '-8%' : '+0%',
     });
-    await tts.ttsPromise(text, outPath);
+    await tts.ttsPromise(plain, outPath);
     const buf = await fs.readFile(outPath);
     await fs.unlink(outPath).catch(() => {});
-    if (buf && buf.length > 100) return buf;
+    if (buf && buf.length > 100) {
+      console.log(`[TTS] node-edge-tts OK voice=${voiceId}`);
+      return buf;
+    }
   } catch (e) {
     if (!/Cannot find module/.test(String(e && e.message))) {
       console.warn('Tts edge node-edge-tts:', e && e.message);
@@ -117,7 +169,7 @@ async function synthesizeEdge(text, voiceId) {
     if (EdgeTTS) {
       const tts = new EdgeTTS();
       if (typeof tts.synthesize === 'function') {
-        const result = await tts.synthesize(text, { voice: voiceId });
+        const result = await tts.synthesize(plain, { voice: voiceId });
         if (Buffer.isBuffer(result)) return result;
         if (result && result.audio) return Buffer.from(result.audio);
       }
@@ -173,6 +225,68 @@ async function synthesizeGoogle(text, lang = 'vi') {
 }
 
 /**
+ * VoiceRSS — CHỈ tiếng Việt (hl=vi-vn).
+ * Giọng có sẵn theo docs: Chi (Male, default). Không dùng hl nước ngoài.
+ * Env: VOICERSS_API_KEY
+ */
+async function synthesizeVoiceRss(text, gender = 'nam') {
+  const key = String(process.env.VOICERSS_API_KEY || '').trim();
+  if (!key || !fetch) return null;
+
+  const full = String(text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[*_~`|#]/g, '')
+    .trim()
+    .slice(0, 1000);
+  if (!full) return null;
+
+  // VoiceRSS tiếng Việt: chỉ có giọng Chi (Male). Luôn hl=vi-vn.
+  const voice = 'Chi';
+  const params = new URLSearchParams({
+    key,
+    hl: 'vi-vn',
+    v: voice,
+    src: full,
+    c: 'MP3',
+    f: '44khz_16bit_mono',
+    r: '0',
+  });
+
+  try {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), 12000) : null;
+    let res;
+    try {
+      res = await fetch(`https://api.voicerss.org/?${params.toString()}`, {
+        method: 'GET',
+        signal: controller ? controller.signal : undefined,
+      });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+    if (!res || !res.ok) {
+      console.warn('[TTS] VoiceRSS HTTP', res && res.status);
+      return null;
+    }
+    const ct = String(res.headers.get('content-type') || '');
+    // Lỗi API thường trả text/plain hoặc JSON
+    if (ct.includes('text') || ct.includes('json')) {
+      const errText = await res.text();
+      console.warn('[TTS] VoiceRSS lỗi:', String(errText).slice(0, 120));
+      return null;
+    }
+    const arr = await res.arrayBuffer();
+    if (arr && arr.byteLength > 100) {
+      console.log(`[TTS] VoiceRSS OK vi-vn voice=${voice}`);
+      return Buffer.from(arr);
+    }
+  } catch (e) {
+    console.warn('[TTS] VoiceRSS fail', e && e.message);
+  }
+  return null;
+}
+
+/**
  * @param {string} text
  * @param {string} [langOrGender='vi'] — 'vi' | 'nam' | 'nu' | voice id
  * @param {{ gender?: string }} [opts]
@@ -188,7 +302,7 @@ async function synthesizeSpeech(text, langOrGender = 'vi', opts = {}) {
     .slice(0, 800);
   if (!full) return null;
 
-  // Edge (nam/nữ thật)
+  // 1) Edge (nam/nữ neural tiếng Việt)
   try {
     const edgeBuf = await synthesizeEdge(full, voiceId);
     if (edgeBuf && edgeBuf.length > 100) return edgeBuf;
@@ -196,7 +310,18 @@ async function synthesizeSpeech(text, langOrGender = 'vi', opts = {}) {
     console.warn('Tts edge fail', e && e.message);
   }
 
-  // Fallback Google (không phân nam/nữ)
+  // 2) VoiceRSS — chỉ vi-vn (giọng Chi)
+  try {
+    const rssBuf = await synthesizeVoiceRss(full, gender);
+    if (rssBuf && rssBuf.length > 100) return rssBuf;
+  } catch (e) {
+    console.warn('Tts VoiceRSS fail', e && e.message);
+  }
+
+  // 3) Google Translate TTS — chỉ tl=vi
+  console.warn(
+    `[TTS] Edge + VoiceRSS thất bại → fallback Google vi. voice yêu cầu=${voiceId}`
+  );
   return synthesizeGoogle(full, 'vi');
 }
 
@@ -222,5 +347,7 @@ module.exports = {
   writeTempMp3,
   cleanupTemp,
   resolveVoiceId,
+  synthesizeVoiceRss,
   VOICES,
+  splitText,
 };
