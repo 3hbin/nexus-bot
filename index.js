@@ -112,6 +112,7 @@ const {
   personaDisplayName,
   getStrictModeBlock,
 } = require('./UserPrefs.js');
+const { mountDashboard, buildWebLink } = require('./Dashboard.js');
 const { synthesizeSpeech, writeTempMp3, cleanupTemp } = require('./Tts.js');
 const { PERSONA_PRESETS } = require('./Interest.js');
 const { setAdminLogClient, adminLog } = require('./AdminLog.js');
@@ -465,6 +466,7 @@ const app = express();
 app.get('/', (req, res) => {
   res.send('🤖 Nexus AI Bot is running 24/7!');
 });
+mountDashboard(app, { isBotOwner });
 app.listen(PORT, () => {
   console.log(`🌐 Web server đang chạy tại port ${PORT}`);
 });
@@ -972,6 +974,7 @@ async function loadAllowedChannelsFromFile() {
 // ==========================================
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Kiểm tra độ trễ kết nối của Bot'),
+  new SlashCommandBuilder().setName('web').setDescription('Lấy link trang cài đặt bot (điện thoại)'),
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Help / Hướng dẫn lệnh & tính năng Nexus AI')
@@ -1693,6 +1696,20 @@ client.on('interactionCreate', async (interaction) => {
 
     const { commandName, user, guildId, channelId } = interaction;
 
+
+    if (commandName === 'web') {
+      const link = buildWebLink(interaction.user.id, interaction.user.username, isBotOwner(interaction.user.id));
+      if (!link.ok) {
+        return interaction.reply({ content: link.message, ephemeral: true });
+      }
+      return interaction.reply({
+        content:
+          `🌐 **Trang cài đặt của bạn** (30 phút)\n` +
+          `${link.url}\n\n` +
+          `Chỉ sửa setting cá nhân. Admin không đưa key bot lên web.`,
+        ephemeral: true,
+      });
+    }
 
     if (commandName === 'help') {
       return interaction.reply({ embeds: [buildHelpEmbed()], ephemeral: true });
@@ -2509,7 +2526,17 @@ client.on('messageCreate', async (message) => {
       try { leaveVoice(message.guild.id); } catch (_) {}
       return message.reply('👋 Đã leave voice.').catch(() => {});
     }
-    if (/^(?:!)?voicechat\s+on$/i.test(raw)) {
+      if (/^(?:web|trang|caidat|cài\s*đặt)$/i.test(raw) || raw === '/web') {
+    const link = buildWebLink(message.author.id, message.author.username, isBotOwner(message.author.id));
+    if (!link.ok) {
+      return message.reply(link.message).catch(() => {});
+    }
+    return message.reply(
+      `🌐 **Trang cài đặt của bạn** (hết hạn 30 phút)\n${link.url}\n\nChỉ sửa setting cá nhân — không đổi key bot / kênh AI.`
+    ).catch(() => {});
+  }
+
+  if (/^(?:!)?voicechat\s+on$/i.test(raw)) {
       setUserVoiceChat(message.author.id, true);
       return message
         .reply(
